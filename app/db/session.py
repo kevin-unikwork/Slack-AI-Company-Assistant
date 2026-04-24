@@ -6,9 +6,16 @@ from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+# Fail-safe for Railway/Aiven/Heroku URLs
+db_url = settings.database_url
+if db_url.startswith("postgres://"):
+    db_url = db_url.replace("postgres://", "postgresql+asyncpg://", 1)
+elif db_url.startswith("postgresql://") and "+asyncpg" not in db_url:
+    db_url = db_url.replace("postgresql://", "postgresql+asyncpg://", 1)
+
 # NullPool is recommended for async; avoids connection pool issues across event loops
 engine = create_async_engine(
-    settings.database_url,
+    db_url,
     echo=settings.debug,
     poolclass=NullPool,
     future=True,

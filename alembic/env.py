@@ -11,8 +11,16 @@ from app.config import settings
 from app.db.models import Base
 
 config = context.config
+
+# Fail-safe for Railway/Aiven/Heroku URLs
+db_url = settings.database_url
+if db_url.startswith("postgres://"):
+    db_url = db_url.replace("postgres://", "postgresql+asyncpg://", 1)
+elif db_url.startswith("postgresql://") and "+asyncpg" not in db_url:
+    db_url = db_url.replace("postgresql://", "postgresql+asyncpg://", 1)
+
 # Set the URL at runtime from pydantic-settings so we never hard-code it
-config.set_main_option("sqlalchemy.url", settings.database_url)
+config.set_main_option("sqlalchemy.url", db_url)
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
@@ -41,8 +49,10 @@ def run_migrations_offline() -> None:
 
 async def run_async_migrations() -> None:
     """Run migrations using an async engine (required for asyncpg driver)."""
+    # Use the same corrected URL set in the config
+    url = context.config.get_main_option("sqlalchemy.url")
     engine = create_async_engine(
-        settings.database_url,
+        url,
         echo=False,
         poolclass=pool.NullPool,  # NullPool is correct here — migrations are one-shot
     )
