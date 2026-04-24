@@ -6,7 +6,7 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy import pool
-
+from dotenv import load_dotenv
 from app.config import settings
 from app.db.models import Base
 
@@ -26,6 +26,8 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 target_metadata = Base.metadata
+
+load_dotenv()
 
 
 def run_migrations_offline() -> None:
