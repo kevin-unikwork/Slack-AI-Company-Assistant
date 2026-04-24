@@ -1,4 +1,4 @@
-from langchain.chains.retrieval_qa.base import RetrievalQA
+from langchain_community.chains import RetrievalQA
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import PromptTemplate
 

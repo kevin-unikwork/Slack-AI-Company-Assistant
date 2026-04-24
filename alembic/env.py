@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from logging.config import fileConfig
 
+import os
 from alembic import context
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy import pool
@@ -10,24 +11,26 @@ from dotenv import load_dotenv
 from app.config import settings
 from app.db.models import Base
 
+load_dotenv()
+
+# Get the URL and apply the fail-safe fix for production
+raw_url = os.getenv("DATABASE_URL") or settings.database_url
+if raw_url.startswith("postgres://"):
+    db_url = raw_url.replace("postgres://", "postgresql+asyncpg://", 1)
+elif raw_url.startswith("postgresql://") and "+asyncpg" not in raw_url:
+    db_url = raw_url.replace("postgresql://", "postgresql+asyncpg://", 1)
+else:
+    db_url = raw_url
+
 config = context.config
 
-# Fail-safe for Railway/Aiven/Heroku URLs
-db_url = settings.database_url
-if db_url.startswith("postgres://"):
-    db_url = db_url.replace("postgres://", "postgresql+asyncpg://", 1)
-elif db_url.startswith("postgresql://") and "+asyncpg" not in db_url:
-    db_url = db_url.replace("postgresql://", "postgresql+asyncpg://", 1)
-
-# Set the URL at runtime from pydantic-settings so we never hard-code it
+# Set the URL at runtime so we never hard-code it
 config.set_main_option("sqlalchemy.url", db_url)
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 target_metadata = Base.metadata
-
-load_dotenv()
 
 
 def run_migrations_offline() -> None:
@@ -37,7 +40,7 @@ def run_migrations_offline() -> None:
     Uses the synchronous psycopg2 dialect for SQL generation.
     """
     # Replace asyncpg with psycopg2 for offline SQL generation
-    url = settings.database_url.replace("postgresql+asyncpg://", "postgresql://")
+    url = db_url.replace("postgresql+asyncpg://", "postgresql://")
     context.configure(
         url=url,
         target_metadata=target_metadata,
