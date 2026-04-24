@@ -1,3 +1,4 @@
+from pydantic import field_validator
 from pydantic_settings import (
     BaseSettings,
     SettingsConfigDict,
@@ -36,6 +37,22 @@ class Settings(BaseSettings):
 
     database_url: str
     redis_url: str = "redis://localhost:6379/0"
+
+    @field_validator("database_url", mode="before")
+    @classmethod
+    def fix_database_url(cls, v: str) -> str:
+        """Fix for Railway/Aiven/Heroku where DATABASE_URL starts with postgres://"""
+        if v and v.startswith("postgres://"):
+            v = v.replace("postgres://", "postgresql+asyncpg://", 1)
+        elif v and v.startswith("postgresql://"):
+            v = v.replace("postgresql://", "postgresql+asyncpg://", 1)
+        
+        # Ensure +asyncpg is present for async engines
+        if v and "postgresql" in v and "+asyncpg" not in v:
+            v = v.replace("postgresql", "postgresql+asyncpg", 1)
+            
+        return v
+
     chroma_persist_dir: str = "./chroma_db"
 
     jwt_secret: str
