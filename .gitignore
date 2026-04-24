@@ -1,0 +1,59 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+
+# Environment Variables
+.env
+env.example
+
+# Databases & Vector Stores
+*.db
+*.sqlite3
+chroma_db/
+uploads/
+
+# Logs
+*.log
+uvicorn.out.log
+uvicorn.err.log
+celebration_test.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Celery
+celerybeat-schedule*
+
+# IDEs
+.vscode/
+.idea/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
