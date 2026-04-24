@@ -1,6 +1,6 @@
 import logging
 from langchain_openai import ChatOpenAI
-from langchain.schema import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 from app.config import settings
 from app.services.slack_service import slack_service
 from app.utils.logger import get_logger

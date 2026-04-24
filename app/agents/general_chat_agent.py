@@ -4,7 +4,7 @@ import time
 from collections import defaultdict
 
 from langchain_openai import ChatOpenAI
-from langchain.schema import HumanMessage, SystemMessage, AIMessage
+from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 
 from app.config import settings
 from app.utils.logger import get_logger

@@ -23,7 +23,7 @@ _llm = ChatOpenAI(model="gpt-4o", temperature=0.8, openai_api_key=settings.opena
 
 async def _generate_ai_greeting(celebration_type: str, full_name: str, years: int = None) -> str:
     """Generate a warm, personalized greeting using AI."""
-    from langchain.schema import HumanMessage, SystemMessage
+    from langchain_core.messages import HumanMessage, SystemMessage
     
     if celebration_type == "birthday":
         prompt = f"Generate a very warm, professional yet friendly birthday greeting for {full_name}. Use emojis, make it feel personal and celebratory. Keep it under 200 characters."

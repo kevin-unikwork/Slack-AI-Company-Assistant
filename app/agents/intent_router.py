@@ -2,7 +2,7 @@ from enum import Enum
 
 import redis.asyncio as aioredis
 from langchain_openai import ChatOpenAI
-from langchain.schema import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.config import settings
 from app.utils.logger import get_logger
@@ -103,4 +103,4 @@ async def classify_intent(slack_id: str, message: str) -> Intent:
 
     except Exception as exc:
         logger.exception("Intent classification LLM call failed", extra={"slack_id": slack_id})
-        raise IntentClassificationError(f"Classification failed: {exc}") from exc
+        raise IntentClassificationError(f"Classification failed: {exc}") from exc

@@ -1,6 +1,6 @@
-from langchain.chains import RetrievalQA
+from langchain.chains.retrieval_qa.base import RetrievalQA
 from langchain_openai import ChatOpenAI
-from langchain.prompts import PromptTemplate
+from langchain_core.prompts import PromptTemplate
 
 from app.config import settings
 from app.services.policy_service import policy_service

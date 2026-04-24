@@ -3,7 +3,7 @@ import asyncio
 from datetime import datetime, timezone, date
 
 from langchain_openai import ChatOpenAI
-from langchain.schema import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 from sqlalchemy import select, and_, func
 
 from app.config import settings
