@@ -180,9 +180,12 @@ class PolicyService:
         await session.flush()
 
     def get_retriever(self):
-        """Return a LangChain retriever (k=8 cosine nearest neighbours)."""
+        """Return a LangChain retriever (k=8 MMR for diversity)."""
         vectorstore = _get_vectorstore()
-        return vectorstore.as_retriever(search_kwargs={"k": 8})
+        return vectorstore.as_retriever(
+            search_type="mmr",
+            search_kwargs={"k": 8, "fetch_k": 20}
+        )
 
 
 policy_service = PolicyService()

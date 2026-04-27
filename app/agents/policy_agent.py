@@ -67,12 +67,40 @@ def _get_rag_chain():
 async def answer_policy_question(question: str, slack_id: str) -> str:
     """
     Main entry point for policy QA.
-    Retrieves context from ChromaDB and generates an answer using LCEL.
+    Retrieves context from PGVector and generates an answer using LCEL.
     """
     try:
+        # 1. Manually retrieve docs to log them for debugging
+        retriever = policy_service.get_retriever()
+        docs = retriever.invoke(question)
+        
+        # Log retrieved chunks for developer debugging
+        context_text = "\n\n".join(doc.page_content for doc in docs)
+        logger.info(
+            "Policy Search Debug",
+            extra={
+                "question": question,
+                "chunks_found": len(docs),
+                "context_preview": context_text[:200] if context_text else "EMPTY"
+            }
+        )
+
+        if not docs:
+            return "I couldn't find any information about that in our policy documents. Please try again or contact HR."
+
+        # 2. Run the chain with the retrieved context
         chain = _get_rag_chain()
-        # Use sync invoke to match the sync database connection
-        answer = chain.invoke(question)
+        # Note: In our current _get_rag_chain, context is derived from the retriever again.
+        # To avoid double-work and ensure we use exactly what we logged, we'll invoke the chain directly.
+        
+        # Re-defining chain locally to use the docs we just fetched
+        prompt = _POLICY_PROMPT
+        llm = _llm
+        output_parser = StrOutputParser()
+        
+        final_chain = prompt | llm | output_parser
+        answer = final_chain.invoke({"context": context_text, "question": question})
+        
         return answer.strip()
         
     except Exception as exc:
