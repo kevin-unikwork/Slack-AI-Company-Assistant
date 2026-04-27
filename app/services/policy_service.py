@@ -56,6 +56,7 @@ def _get_vectorstore() -> PGVector:
         collection_name=POLICY_COLLECTION_NAME,
         connection=sync_url,
         use_jsonb=True,
+        async_mode=False,
     )
     return _vectorstore
 
