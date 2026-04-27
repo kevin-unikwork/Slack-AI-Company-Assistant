@@ -201,7 +201,7 @@ class PolicyService:
         vectorstore = _get_vectorstore()
         return vectorstore.as_retriever(
             search_type="mmr",
-            search_kwargs={"k": 8, "fetch_k": 20}
+            search_kwargs={"k": 8, "fetch_k": 30}
         )
 
 
