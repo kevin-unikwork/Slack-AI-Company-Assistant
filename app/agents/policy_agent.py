@@ -271,6 +271,28 @@ def _format_docs(docs) -> str:
     return "\n\n".join(formatted_chunks)
 
 
+def _normalize_slack_markdown(text: str) -> str:
+    """
+    Normalize model output for Slack mrkdwn rendering.
+    - Convert Markdown bold (**text**) to Slack bold (*text*)
+    - Normalize list markers to Slack-friendly bullet points
+    """
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return cleaned
+
+    # Convert markdown bold to Slack bold.
+    cleaned = re.sub(r"\*\*(.+?)\*\*", r"*\1*", cleaned)
+
+    # Normalize common markdown list markers to a bullet.
+    cleaned = re.sub(r"(?m)^\s*[-]\s+", "• ", cleaned)
+
+    # Avoid accidental double asterisks left behind.
+    cleaned = cleaned.replace("**", "*")
+
+    return cleaned
+
+
 def _retrieve_policy_docs(question: str):
     canonical_question, queries = _build_retrieval_queries(question)
     retrieved_by_query: list[list] = []
@@ -323,7 +345,7 @@ async def answer_policy_question(question: str, slack_id: str) -> str:
         final_chain = _POLICY_PROMPT | _llm | StrOutputParser()
         answer = final_chain.invoke({"context": context_text, "question": question})
 
-        return answer.strip()
+        return _normalize_slack_markdown(answer)
 
     except Exception as exc:
         logger.exception(f"Policy QA failed for user {slack_id}", extra={"question": question})

@@ -67,3 +67,19 @@ def test_retrieve_policy_docs_merges_and_dedupes_results(monkeypatch):
     assert "HR contact" in retrieval_queries
     assert len(docs) == 2
     assert docs[0].page_content == "Shraddha Shah is the HR contact."
+
+
+def test_normalize_slack_markdown_converts_double_asterisk_bold():
+    policy_agent = _load_policy_agent()
+
+    raw = (
+        "According to all_policy.pdf:\n"
+        "- **Scope**: Applies to all employees\n"
+        "- **Leave**: 12 per year"
+    )
+    normalized = policy_agent._normalize_slack_markdown(raw)
+
+    assert "*Scope*" in normalized
+    assert "*Leave*" in normalized
+    assert "**Scope**" not in normalized
+    assert "• *Scope*" in normalized
