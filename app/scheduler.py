@@ -75,8 +75,10 @@ def start_scheduler():
 
 def stop_scheduler():
     """Stop the scheduler on app shutdown."""
-    if scheduler.running:
-        scheduler.shutdown()
-        logger.info("APScheduler stopped")
-    else:
-        logger.info("APScheduler was not running, skipping shutdown")
+    try:
+        if scheduler.running:
+            scheduler.shutdown()
+            logger.info("APScheduler stopped")
+    except Exception:
+        # Ignore errors during shutdown
+        pass
