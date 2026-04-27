@@ -20,45 +20,49 @@ def _doc(content: str, source: str = "all_policy.pdf", page: int = 1):
     )
 
 
-def test_normalize_question_maps_hr_manager_to_hr():
+def test_build_canonical_question_is_generic_not_hr_specific():
     policy_agent = _load_policy_agent()
 
-    normalized, aliases = policy_agent._normalize_question("Who is HR Manager of Unikwork?")
+    canonical, removed = policy_agent._build_canonical_question("Who is Finance Manager of Unikwork?")
 
-    assert normalized == "Who is HR of Unikwork?"
-    assert "hr manager" in aliases
+    assert canonical == "Who is Finance of Unikwork?"
+    assert removed is True
 
 
-def test_build_retrieval_queries_includes_normalized_and_alias_queries():
+def test_build_retrieval_queries_include_original_and_generic_variants():
     policy_agent = _load_policy_agent()
 
-    normalized, aliases, queries = policy_agent._build_retrieval_queries("Who is HR Manager?")
+    canonical, queries = policy_agent._build_retrieval_queries("Who is HR Manager?")
 
-    assert normalized == "Who is HR?"
-    assert "hr manager" in aliases
-    assert "Who is HR Manager?" in queries
+    assert canonical == "Who is HR?"
+    assert queries[0] == "Who is HR Manager?"
     assert "Who is HR?" in queries
-    assert any("Hr Manager" in query for query in queries)
+    assert "HR contact" in queries
 
 
-def test_retrieve_policy_docs_merges_results_for_role_aliases(monkeypatch):
+def test_retrieve_policy_docs_merges_and_dedupes_results(monkeypatch):
     policy_agent = _load_policy_agent()
 
     query_to_docs = {
-        "Who is HR Manager?": [_doc("Shraddha Shah is the HR contact.")],
-        "Who is HR?": [_doc("Shraddha Shah is the HR contact.")],
-        "Who is HR? Hr Manager": [_doc("Shraddha Shah is the HR Manager.")],
+        "Who is HR Manager?": [_doc("Shraddha Shah is the HR contact.", page=2)],
+        "Who is HR?": [_doc("Shraddha Shah is the HR contact.", page=2)],
+        "HR contact": [_doc("Shraddha Shah is the HR Manager.", page=5)],
     }
 
     class FakeRetriever:
         def invoke(self, query: str):
             return query_to_docs.get(query, [])
 
+    monkeypatch.setattr(
+        policy_agent,
+        "_build_retrieval_queries",
+        lambda question: ("Who is HR?", ["Who is HR Manager?", "Who is HR?", "HR contact"]),
+    )
     monkeypatch.setattr(policy_agent.policy_service, "get_retriever", lambda: FakeRetriever())
 
-    normalized, aliases, docs = policy_agent._retrieve_policy_docs("Who is HR Manager?")
+    canonical, retrieval_queries, docs = policy_agent._retrieve_policy_docs("Who is HR Manager?")
 
-    assert normalized == "Who is HR?"
-    assert "hr manager" in aliases
+    assert canonical == "Who is HR?"
+    assert "HR contact" in retrieval_queries
     assert len(docs) == 2
-    assert any("HR Manager" in doc.page_content for doc in docs)
+    assert docs[0].page_content == "Shraddha Shah is the HR contact."

@@ -199,10 +199,11 @@ async def handle_mention(event: dict, say, ack) -> None:
     await ack()
     slack_id: str = event.get("user", "")
     text: str = event.get("text", "")
+    channel_id: str = event.get("channel", "")
     # Strip the mention tag and treat the rest as a DM
     clean_text = " ".join(w for w in text.split() if not w.startswith("<@"))
     if clean_text.strip():
-        asyncio.create_task(_route_dm(slack_id, clean_text.strip()))
+        asyncio.create_task(_route_dm(slack_id, clean_text.strip(), channel_id))
     else:
         await say(
             "Hi! Mention me with a question, e.g. `@Bot What is the leave policy?`"
@@ -235,13 +236,17 @@ async def cmd_policy(ack, command, say) -> None:
 
 
 async def _answer_policy_command(slack_id: str, channel_id: str, question: str) -> None:
+    loading_ts = None
     try:
-        loading_ts = await slack_service.dm_user(slack_id, "_Searching policies..._ :mag_right:")
+        loading_ts = await slack_service.post_to_channel(channel_id, "_Searching policies..._ :mag_right:")
         answer = await policy_agent.answer_policy_question(question, slack_id)
         await slack_service.update_message(channel_id, loading_ts, answer)
     except Exception:
         logger.exception("Policy command failed", extra={"slack_id": slack_id})
-        await slack_service.dm_user(slack_id, ":x: Failed to retrieve policy information.")
+        if loading_ts:
+            await slack_service.update_message(channel_id, loading_ts, ":x: Failed to retrieve policy information.")
+        else:
+            await slack_service.dm_user(slack_id, ":x: Failed to retrieve policy information.")
 
 
 @bolt_app.command("/announce")
