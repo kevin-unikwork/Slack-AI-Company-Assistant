@@ -4,7 +4,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from langchain_postgres import PGVector
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -77,6 +76,8 @@ class PolicyService:
         Save file to disk, load, chunk, embed, store in ChromaDB,
         then persist metadata in PostgreSQL.
         """
+        from langchain_community.document_loaders import PyMuPDFLoader, TextLoader
+
         # Save temp file
         safe_name = f"{uuid.uuid4().hex}_{original_filename}"
         temp_path = UPLOAD_DIR / safe_name
@@ -85,13 +86,29 @@ class PolicyService:
         try:
             # Load document
             if file_type == "pdf":
-                loader = PyPDFLoader(str(temp_path))
+                loader = PyMuPDFLoader(str(temp_path))
             elif file_type == "txt":
                 loader = TextLoader(str(temp_path), encoding="utf-8")
             else:
                 raise PolicyAgentError(f"Unsupported file type: {file_type}")
 
             raw_docs = loader.load()
+            
+            # Post-process raw docs to fix vertical text issue
+            # If many lines have very few words, we join them
+            for doc in raw_docs:
+                # Replace single newlines with spaces if the line is short,
+                # but keep double newlines (paragraphs)
+                content = doc.page_content
+                # Heuristic: If lines are very short, it's likely fragmented
+                lines = content.split('\n')
+                if len(lines) > 5 and sum(len(l.split()) for l in lines) / len(lines) < 5:
+                    # Likely fragmented vertical text
+                    doc.page_content = " ".join(l.strip() for l in lines if l.strip())
+                else:
+                    # Just clean up stray single newlines that aren't paragraphs
+                    doc.page_content = content.replace('\n', ' ').replace('  ', ' ')
+
             chunks = _splitter.split_documents(raw_docs)
 
             if not chunks:
