@@ -20,7 +20,7 @@ logger = get_logger(__name__)
 UPLOAD_DIR = Path("./uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
 
-_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+_splitter = RecursiveCharacterTextSplitter(chunk_size=1500, chunk_overlap=300)
 
 
 POLICY_COLLECTION_NAME = "company_policies"
@@ -180,9 +180,9 @@ class PolicyService:
         await session.flush()
 
     def get_retriever(self):
-        """Return a LangChain retriever (k=4 cosine nearest neighbours)."""
+        """Return a LangChain retriever (k=8 cosine nearest neighbours)."""
         vectorstore = _get_vectorstore()
-        return vectorstore.as_retriever(search_kwargs={"k": 4})
+        return vectorstore.as_retriever(search_kwargs={"k": 8})
 
 
 policy_service = PolicyService()
