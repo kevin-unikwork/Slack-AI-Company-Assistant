@@ -78,7 +78,7 @@ async def answer_policy_question(question: str, slack_id: str) -> str:
         
     except Exception as exc:
         logger.exception(f"Policy QA failed for user {slack_id}", extra={"question": question})
-        return "I'm sorry, I encountered an error while searching for that policy. Please try again or contact HR."
+        return f"I'm sorry, I encountered an error while searching for that policy.\n*Error:* `{str(exc)}`"
 
 def reset_chain():
     """Reset the global chain (useful for testing or if retriever changes)."""

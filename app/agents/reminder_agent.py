@@ -9,7 +9,7 @@ import logging
 from datetime import datetime, timezone, timedelta
 
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain.schema import HumanMessage, SystemMessage
 from sqlalchemy import select, and_
 
 from app.config import settings

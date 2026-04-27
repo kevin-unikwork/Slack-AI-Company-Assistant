@@ -5,7 +5,7 @@ from pathlib import Path
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
-from langchain_postgres.vectorstores import PGVector
+from langchain_postgres import PGVector
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
@@ -85,9 +85,9 @@ class PolicyService:
                     "doc_type": file_type,
                 })
 
-            # Embed and store in ChromaDB
+            # Embed and store in PGVector
             vectorstore = _get_vectorstore()
-            vectorstore.add_documents(chunks)
+            await vectorstore.aadd_documents(chunks)
 
             logger.info(
                 "Policy document ingested",
