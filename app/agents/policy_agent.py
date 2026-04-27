@@ -16,6 +16,12 @@ _llm = ChatOpenAI(
     openai_api_key=settings.openai_api_key,
 )
 
+_query_variant_llm = ChatOpenAI(
+    model="gpt-4o-mini",
+    temperature=0.0,
+    openai_api_key=settings.openai_api_key,
+)
+
 _POLICY_PROMPT_TEMPLATE = """You are a STRICT and PROFESSIONAL CORPORATE HR BOT. Your only job is to answer questions based on the provided company policy documents.
 
 ### SAFETY & SCOPE RULES (MOST IMPORTANT):
@@ -43,6 +49,20 @@ Answer:"""
 _POLICY_PROMPT = PromptTemplate(
     template=_POLICY_PROMPT_TEMPLATE,
     input_variables=["context", "question"],
+)
+
+_QUERY_VARIANT_PROMPT = PromptTemplate(
+    template=(
+        "You generate search query variants for workplace policy retrieval.\n"
+        "Return ONLY JSON: {\"variants\": [\"...\"]}\n"
+        "Rules:\n"
+        "1) Preserve original meaning.\n"
+        "2) Expand abbreviations and alternate phrasing when useful.\n"
+        "3) Max 3 variants.\n"
+        "4) Do not invent facts.\n\n"
+        "Question: {question}\n"
+    ),
+    input_variables=["question"],
 )
 
 _TITLE_MODIFIER_WORDS = {
@@ -148,10 +168,46 @@ def _build_keyword_query(question: str) -> str:
     return " ".join(keywords)
 
 
+def _parse_variant_payload(raw_text: str) -> list[str]:
+    if not raw_text:
+        return []
+    match = re.search(r"\{.*\}", raw_text, flags=re.DOTALL)
+    if not match:
+        return []
+    try:
+        import json
+
+        payload = json.loads(match.group(0))
+    except Exception:
+        return []
+
+    variants = payload.get("variants", [])
+    if not isinstance(variants, list):
+        return []
+    return [_clean_text(str(item)) for item in variants if _clean_text(str(item))]
+
+
+def _build_semantic_variants(question: str) -> list[str]:
+    try:
+        prompt = _QUERY_VARIANT_PROMPT.format(question=question)
+        response = _query_variant_llm.invoke(prompt)
+        content = getattr(response, "content", "")
+        if isinstance(content, list):
+            content = " ".join(
+                part.get("text", "") if isinstance(part, dict) else str(part)
+                for part in content
+            )
+        return _parse_variant_payload(str(content))
+    except Exception:
+        logger.warning("Semantic variant generation failed", extra={"question": question})
+        return []
+
+
 def _build_retrieval_queries(question: str) -> tuple[str, list[str]]:
     original = _clean_text(question)
     canonical, removed_title_modifier = _build_canonical_question(original)
     keyword_query = _build_keyword_query(canonical)
+    semantic_variants = _build_semantic_variants(original)
     contact_query = ""
     if removed_title_modifier:
         base = keyword_query or canonical
@@ -160,7 +216,7 @@ def _build_retrieval_queries(question: str) -> tuple[str, list[str]]:
 
     queries: list[str] = []
     seen = set()
-    for query in [original, canonical, keyword_query, contact_query]:
+    for query in [original, canonical, keyword_query, contact_query, *semantic_variants]:
         normalized = _clean_text(query)
         if not normalized:
             continue
@@ -217,16 +273,26 @@ def _format_docs(docs) -> str:
 
 def _retrieve_policy_docs(question: str):
     canonical_question, queries = _build_retrieval_queries(question)
-    retriever = policy_service.get_retriever()
-
     retrieved_by_query: list[list] = []
-    for query in queries:
+
+    if hasattr(policy_service, "retrieve_documents"):
         try:
-            query_docs = retriever.invoke(query)
+            query_doc_pairs = policy_service.retrieve_documents(queries)
+            for _, docs in query_doc_pairs:
+                retrieved_by_query.append(docs)
         except Exception:
-            logger.warning("Policy retrieval failed for query variant", extra={"query": query})
-            query_docs = []
-        retrieved_by_query.append(query_docs)
+            logger.warning("Hybrid policy retrieval failed; falling back to retriever.invoke")
+            retrieved_by_query = []
+
+    if not retrieved_by_query:
+        retriever = policy_service.get_retriever()
+        for query in queries:
+            try:
+                query_docs = retriever.invoke(query)
+            except Exception:
+                logger.warning("Policy retrieval failed for query variant", extra={"query": query})
+                query_docs = []
+            retrieved_by_query.append(query_docs)
 
     merged_docs = _merge_retrieved_docs(retrieved_by_query)
     return canonical_question, queries, merged_docs

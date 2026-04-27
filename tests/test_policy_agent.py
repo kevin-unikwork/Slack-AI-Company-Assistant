@@ -31,6 +31,7 @@ def test_build_canonical_question_is_generic_not_hr_specific():
 
 def test_build_retrieval_queries_include_original_and_generic_variants():
     policy_agent = _load_policy_agent()
+    policy_agent._build_semantic_variants = lambda question: ["work from home policy"]
 
     canonical, queries = policy_agent._build_retrieval_queries("Who is HR Manager?")
 

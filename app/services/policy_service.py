@@ -204,5 +204,47 @@ class PolicyService:
             search_kwargs={"k": 8, "fetch_k": 30}
         )
 
+    def retrieve_documents(self, queries: list[str]) -> list[tuple[str, list]]:
+        """
+        Hybrid retrieval per query:
+        - MMR for diversity
+        - Similarity search for direct semantic nearest-neighbors
+        Returns a list of (query, docs) pairs.
+        """
+        vectorstore = _get_vectorstore()
+        retriever = self.get_retriever()
+        results: list[tuple[str, list]] = []
+
+        for query in queries:
+            mmr_docs = []
+            sim_docs = []
+            try:
+                mmr_docs = retriever.invoke(query)
+            except Exception:
+                logger.warning("MMR retrieval failed", extra={"query": query})
+            try:
+                sim_docs = vectorstore.similarity_search(query, k=8)
+            except Exception:
+                logger.warning("Similarity retrieval failed", extra={"query": query})
+
+            # Keep order stable and avoid duplicate chunk objects.
+            merged = []
+            seen = set()
+            for doc in [*mmr_docs, *sim_docs]:
+                metadata = getattr(doc, "metadata", {}) or {}
+                key = (
+                    metadata.get("source"),
+                    metadata.get("page"),
+                    " ".join((doc.page_content or "").split()),
+                )
+                if key in seen:
+                    continue
+                seen.add(key)
+                merged.append(doc)
+
+            results.append((query, merged))
+
+        return results
+
 
 policy_service = PolicyService()
