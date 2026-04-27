@@ -168,6 +168,24 @@ class SlackService:
                 slack_error_code=exc.response.get("error"),
             ) from exc
 
+    async def delete_message(self, channel: str, ts: str) -> None:
+        """Delete an existing message (e.g. removing a loading indicator)."""
+        try:
+            await self._client.chat_delete(channel=channel, ts=ts)
+            logger.info("Message deleted", extra={"channel": channel, "ts": ts})
+        except SlackApiError as exc:
+            # If message is already deleted or not found, don't crash
+            if exc.response.get("error") in ("message_not_found", "cant_delete_message"):
+                return
+            logger.exception(
+                "Failed to delete message",
+                extra={"channel": channel, "ts": ts, "error": str(exc)},
+            )
+            raise SlackServiceError(
+                f"Could not delete message in {channel}: {exc.response['error']}",
+                slack_error_code=exc.response.get("error"),
+            ) from exc
+
     async def add_reaction(self, channel: str, ts: str, emoji: str) -> None:
         """Add an emoji reaction to a message."""
         try:
