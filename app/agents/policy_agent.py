@@ -72,8 +72,8 @@ async def answer_policy_question(question: str, slack_id: str) -> str:
     """
     try:
         chain = _get_rag_chain()
-        # Invoke the LCEL chain
-        answer = await chain.ainvoke(question)
+        # Use sync invoke to match the sync database connection
+        answer = chain.invoke(question)
         return answer.strip()
         
     except Exception as exc:
