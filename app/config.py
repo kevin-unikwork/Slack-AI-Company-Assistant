@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     slack_bot_token: str
     slack_signing_secret: str
     slack_app_token: str
+    openai_api_key: str
 
     @field_validator("openai_api_key", mode="before")
     @classmethod
