@@ -128,6 +128,38 @@ _QUERY_STOPWORDS = {
     "about",
 }
 
+_BROAD_POLICY_REGEX = re.compile(
+    r"\b(?:company|all|overall|complete|full)?\s*(?:policy|policies|policy document|policy documents|handbook)\b",
+    flags=re.IGNORECASE,
+)
+
+_SPECIFIC_POLICY_KEYWORDS = {
+    "leave",
+    "wfh",
+    "work from home",
+    "remote",
+    "attendance",
+    "office",
+    "timing",
+    "hours",
+    "holiday",
+    "benefit",
+    "salary",
+    "travel",
+    "conduct",
+    "discipline",
+    "grievance",
+    "harassment",
+    "notice",
+    "probation",
+    "confirm",
+    "appraisal",
+    "resignation",
+    "termination",
+    "hr",
+    "manager",
+}
+
 
 def _clean_text(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "").strip())
@@ -285,12 +317,37 @@ def _normalize_slack_markdown(text: str) -> str:
     cleaned = re.sub(r"\*\*(.+?)\*\*", r"*\1*", cleaned)
 
     # Normalize common markdown list markers to a bullet.
-    cleaned = re.sub(r"(?m)^\s*[-]\s+", "• ", cleaned)
+    cleaned = re.sub(r"(?m)^\s*[-]\s+", "- ", cleaned)
 
     # Avoid accidental double asterisks left behind.
     cleaned = cleaned.replace("**", "*")
 
     return cleaned
+
+
+def _is_broad_policy_summary_request(question: str) -> bool:
+    cleaned = _clean_text(question).lower()
+    if not cleaned:
+        return False
+
+    if not _BROAD_POLICY_REGEX.search(cleaned):
+        return False
+
+    if any(keyword in cleaned for keyword in _SPECIFIC_POLICY_KEYWORDS):
+        if "company policy" not in cleaned and "all policies" not in cleaned:
+            return False
+
+    token_count = len(_tokenize_words(cleaned))
+    return token_count <= 10 or "all policies" in cleaned or "company policy" in cleaned
+
+
+def _prepare_generation_question(question: str, canonical_question: str) -> str:
+    if _is_broad_policy_summary_request(question):
+        return (
+            "Provide a concise summary of the key company policies from the provided context. "
+            "Cover main policy areas and key rules, and mention the source document."
+        )
+    return question or canonical_question
 
 
 def _retrieve_policy_docs(question: str):
@@ -342,8 +399,9 @@ async def answer_policy_question(question: str, slack_id: str) -> str:
         if not docs:
             return "I couldn't find any information about that in our policy documents. Please try again or contact HR."
 
+        generation_question = _prepare_generation_question(question, canonical_question)
         final_chain = _POLICY_PROMPT | _llm | StrOutputParser()
-        answer = final_chain.invoke({"context": context_text, "question": question})
+        answer = final_chain.invoke({"context": context_text, "question": generation_question})
 
         return _normalize_slack_markdown(answer)
 
@@ -354,3 +412,4 @@ async def answer_policy_question(question: str, slack_id: str) -> str:
 def reset_chain():
     """Reset the global chain (useful for testing or if retriever changes)."""
     return None
+

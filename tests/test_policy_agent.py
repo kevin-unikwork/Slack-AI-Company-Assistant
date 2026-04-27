@@ -79,7 +79,24 @@ def test_normalize_slack_markdown_converts_double_asterisk_bold():
     )
     normalized = policy_agent._normalize_slack_markdown(raw)
 
-    assert "*Scope*" in normalized
+    assert "- *Scope*" in normalized
     assert "*Leave*" in normalized
     assert "**Scope**" not in normalized
-    assert "• *Scope*" in normalized
+    assert "- *Scope*" in normalized
+
+
+def test_prepare_generation_question_for_broad_policy_query():
+    policy_agent = _load_policy_agent()
+
+    prepared = policy_agent._prepare_generation_question("Give me company policy", "Give me company policy")
+
+    assert "summary of the key company policies" in prepared.lower()
+
+
+def test_prepare_generation_question_keeps_specific_query():
+    policy_agent = _load_policy_agent()
+
+    prepared = policy_agent._prepare_generation_question("Give me leave policy", "Give me leave policy")
+
+    assert prepared == "Give me leave policy"
+
