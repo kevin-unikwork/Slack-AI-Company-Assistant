@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.config import settings
-from app.db.chroma import get_embeddings, POLICY_COLLECTION_NAME
+from langchain_openai import OpenAIEmbeddings
 from app.db.models.policy import PolicyDocument
 from app.utils.logger import get_logger
 from app.utils.exceptions import PolicyAgentError, DocumentNotFoundError
@@ -23,8 +23,25 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 _splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
 
 
+POLICY_COLLECTION_NAME = "company_policies"
+_embeddings = None
+_vectorstore = None
+
+def _get_embeddings() -> OpenAIEmbeddings:
+    global _embeddings
+    if _embeddings is None:
+        _embeddings = OpenAIEmbeddings(
+            model="text-embedding-ada-002",
+            openai_api_key=settings.openai_api_key,
+        )
+    return _embeddings
+
 def _get_vectorstore() -> PGVector:
     """Return a LangChain PGVector wrapper using the Aiven DB."""
+    global _vectorstore
+    if _vectorstore is not None:
+        return _vectorstore
+
     # Convert asyncpg URL to standard postgresql:// for PGVector
     sync_url = settings.database_url
     if sync_url.startswith("postgresql+asyncpg://"):
@@ -32,12 +49,13 @@ def _get_vectorstore() -> PGVector:
     elif sync_url.startswith("postgres://"):
         sync_url = sync_url.replace("postgres://", "postgresql://", 1)
 
-    return PGVector(
-        embeddings=get_embeddings(),
+    _vectorstore = PGVector(
+        embeddings=_get_embeddings(),
         collection_name=POLICY_COLLECTION_NAME,
         connection=sync_url,
         use_jsonb=True,
     )
+    return _vectorstore
 
 
 class PolicyService:
