@@ -125,10 +125,11 @@ async def _route_dm(slack_id: str, text: str, channel_id: str) -> None:
 
     except Exception as exc:
         logger.exception("DM routing failed", extra={"slack_id": slack_id})
+        error_msg = str(exc)
         await slack_service.update_message(
             channel_id, 
             loading_ts, 
-            ":x: Something went wrong processing your message. Please try again."
+            f":x: Something went wrong processing your message.\n*Error:* `{error_msg}`\n_Please check your environment variables (like OPENAI_API_KEY) or logs._"
         )
 
 

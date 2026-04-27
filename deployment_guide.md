@@ -4,40 +4,15 @@ This guide explains how to deploy the Slack AI Bot to production using **Render*
 
 ---
 
-## 🏗️ Deployment Architecture
-To run the full system, you need 3 active processes:
-1.  **Web Server**: Handles Slack Webhooks (FastAPI).
-2.  **Worker**: Processes background tasks and AI generations (Celery).
-3.  **Beat**: Schedules recurring tasks like Standups and Celebrations (Celery Beat).
-
-Plus 2 managed services:
-*   **PostgreSQL**: For persistent data.
-*   **Redis**: For Celery task brokering and state.
+### 4. Single Web Service
+Since the project uses **APScheduler** integrated into the FastAPI process, you only need to run the `web` service. APScheduler handles all background tasks (Reminders, Standups, Celebrations) automatically within the same process.
 
 ---
 
-## 🛤️ Option 1: Deploying on Railway (Recommended)
-Railway is highly recommended for this project as it handles multi-process deployments and managed databases very well.
-
-### 1. Connect your GitHub
-1.  Go to [Railway.app](https://railway.app/) and create a new project.
-2.  Select **"Deploy from GitHub repo"** and choose your bot repository.
-
-### 2. Add Managed Databases
-1.  In your Railway project, click **"New"** -> **"Database"** -> **"Add PostgreSQL"**.
-2.  Click **"New"** -> **"Database"** -> **"Add Redis"**.
-
-### 3. Configure Environment Variables
-Railway will automatically provide `DATABASE_URL` and `REDIS_URL`. You need to manually add:
-*   `SLACK_BOT_TOKEN`
-*   `SLACK_SIGNING_SECRET`
-*   `OPENAI_API_KEY`
-*   `ONBOARDING_WELCOME_CHANNEL` (Your Slack Channel ID)
-
-### 4. Setup Multiple Services
-Since we have a `Procfile`, Railway will detect the `web`, `worker`, and `beat` commands. 
-*   Railway might start the `web` service by default. 
-*   You may need to duplicate the service (using the same repo) and change the **Start Command** to `celery -A app.core.celery_app worker --loglevel=info` for the worker, and another for the beat.
+## 🏗️ Architecture Note: Background Tasks
+We have migrated from Celery to **APScheduler**. 
+*   **Pros**: Simplified deployment (no separate worker/beat needed), less memory usage.
+*   **Cons**: If the `web` service goes to sleep (e.g., on a free tier), the scheduler stops. Ensure your service is kept awake for reliable reminders.
 
 ---
 

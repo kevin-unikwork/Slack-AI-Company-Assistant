@@ -33,7 +33,13 @@ class Settings(BaseSettings):
     slack_signing_secret: str
     slack_app_token: str
 
-    openai_api_key: str
+    @field_validator("openai_api_key", mode="before")
+    @classmethod
+    def validate_openai_key(cls, v: str) -> str:
+        if not v or "your-" in v.lower() or "sk-..." in v:
+            import logging
+            logging.warning("OPENAI_API_KEY appears to be missing or a placeholder!")
+        return v
 
     database_url: str
     redis_url: str = "redis://localhost:6379/0"
