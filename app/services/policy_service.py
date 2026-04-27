@@ -42,12 +42,14 @@ def _get_vectorstore() -> PGVector:
     if _vectorstore is not None:
         return _vectorstore
 
-    # Convert asyncpg URL to standard postgresql:// for PGVector
+    # Convert asyncpg URL to standard postgresql+psycopg:// for PGVector
     sync_url = settings.database_url
     if sync_url.startswith("postgresql+asyncpg://"):
-        sync_url = sync_url.replace("postgresql+asyncpg://", "postgresql://", 1)
+        sync_url = sync_url.replace("postgresql+asyncpg://", "postgresql+psycopg://", 1)
     elif sync_url.startswith("postgres://"):
-        sync_url = sync_url.replace("postgres://", "postgresql://", 1)
+        sync_url = sync_url.replace("postgres://", "postgresql+psycopg://", 1)
+    elif sync_url.startswith("postgresql://"):
+        sync_url = sync_url.replace("postgresql://", "postgresql+psycopg://", 1)
 
     _vectorstore = PGVector(
         embeddings=_get_embeddings(),
