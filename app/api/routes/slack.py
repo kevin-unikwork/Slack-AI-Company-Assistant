@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import contextlib
+import time
 
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
@@ -33,6 +34,42 @@ bolt_app = AsyncApp(
 handler = AsyncSlackRequestHandler(bolt_app)
 
 router = APIRouter(tags=["slack"])
+
+
+def _policy_loading_frames() -> list[str]:
+    return [
+        "_Searching policy documents_ :mag_right: :hourglass_flowing_sand:",
+        "_Searching policy documents._ :mag_right: :hourglass_flowing_sand:",
+        "_Searching policy documents.._ :mag_right: :hourglass_flowing_sand:",
+        "_Searching policy documents..._ :mag_right: :hourglass_flowing_sand:",
+    ]
+
+
+def _start_loading_animation(channel_id: str, loading_ts: str) -> tuple[asyncio.Task, float]:
+    async def _run() -> None:
+        frames = _policy_loading_frames()
+        i = 0
+        while True:
+            with contextlib.suppress(Exception):
+                await slack_service.update_message(channel_id, loading_ts, frames[i % len(frames)])
+            i += 1
+            await asyncio.sleep(0.45)
+
+    task = asyncio.create_task(_run())
+    return task, time.monotonic()
+
+
+async def _stop_loading_animation(
+    animation_task: asyncio.Task,
+    started_at: float,
+    min_visible_seconds: float = 1.8,
+) -> None:
+    elapsed = time.monotonic() - started_at
+    if elapsed < min_visible_seconds:
+        await asyncio.sleep(min_visible_seconds - elapsed)
+    animation_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await animation_task
 
 
 @router.post("/slack/events")
@@ -94,18 +131,6 @@ async def _route_dm(slack_id: str, text: str, channel_id: str) -> None:
         "_Processing your request..._ :hourglass_flowing_sand:",
     )
 
-    async def _run_policy_loading_animation() -> None:
-        frames = [
-            "_Searching policy documents._ :mag_right:",
-            "_Searching policy documents.._ :mag_right:",
-            "_Searching policy documents..._ :mag_right:",
-        ]
-        i = 0
-        while True:
-            await slack_service.update_message(channel_id, loading_ts, frames[i % len(frames)])
-            i += 1
-            await asyncio.sleep(0.8)
-    
     try:
         intent = await intent_router.classify_intent(slack_id, text)
 
@@ -115,13 +140,11 @@ async def _route_dm(slack_id: str, text: str, channel_id: str) -> None:
             await slack_service.delete_message(channel_id, loading_ts)
 
         elif intent == Intent.POLICY_QA:
-            animation_task = asyncio.create_task(_run_policy_loading_animation())
+            animation_task, started_at = _start_loading_animation(channel_id, loading_ts)
             try:
                 answer = await policy_agent.answer_policy_question(text, slack_id)
             finally:
-                animation_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await animation_task
+                await _stop_loading_animation(animation_task, started_at)
             await slack_service.delete_message(channel_id, loading_ts)
             await slack_service.post_to_channel(channel_id, answer)
 
@@ -259,27 +282,15 @@ async def cmd_policy(ack, command, say) -> None:
 async def _answer_policy_command(slack_id: str, channel_id: str, question: str) -> None:
     loading_ts = None
     try:
-        loading_ts = await slack_service.post_to_channel(channel_id, "_Searching policy documents._ :mag_right:")
-
-        async def _run_policy_loading_animation() -> None:
-            frames = [
-                "_Searching policy documents._ :mag_right:",
-                "_Searching policy documents.._ :mag_right:",
-                "_Searching policy documents..._ :mag_right:",
-            ]
-            i = 0
-            while True:
-                await slack_service.update_message(channel_id, loading_ts, frames[i % len(frames)])
-                i += 1
-                await asyncio.sleep(0.8)
-
-        animation_task = asyncio.create_task(_run_policy_loading_animation())
+        loading_ts = await slack_service.post_to_channel(
+            channel_id,
+            "_Searching policy documents_ :mag_right: :hourglass_flowing_sand:",
+        )
+        animation_task, started_at = _start_loading_animation(channel_id, loading_ts)
         try:
             answer = await policy_agent.answer_policy_question(question, slack_id)
         finally:
-            animation_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await animation_task
+            await _stop_loading_animation(animation_task, started_at)
         await slack_service.delete_message(channel_id, loading_ts)
         await slack_service.post_to_channel(channel_id, answer)
     except Exception:
