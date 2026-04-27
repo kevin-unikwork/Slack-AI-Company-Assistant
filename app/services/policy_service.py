@@ -42,14 +42,12 @@ def _get_vectorstore() -> PGVector:
     if _vectorstore is not None:
         return _vectorstore
 
-    # Convert asyncpg URL to standard postgresql+psycopg:// for PGVector (v3)
+    # Convert asyncpg URL to standard postgresql:// for PGVector
     sync_url = settings.database_url
     if sync_url.startswith("postgresql+asyncpg://"):
-        sync_url = sync_url.replace("postgresql+asyncpg://", "postgresql+psycopg://", 1)
+        sync_url = sync_url.replace("postgresql+asyncpg://", "postgresql://", 1)
     elif sync_url.startswith("postgres://"):
-        sync_url = sync_url.replace("postgres://", "postgresql+psycopg://", 1)
-    elif sync_url.startswith("postgresql://"):
-        sync_url = sync_url.replace("postgresql://", "postgresql+psycopg://", 1)
+        sync_url = sync_url.replace("postgres://", "postgresql://", 1)
 
     _vectorstore = PGVector(
         embeddings=_get_embeddings(),
@@ -107,7 +105,7 @@ class PolicyService:
 
             # Embed and store in PGVector
             vectorstore = _get_vectorstore()
-            await vectorstore.aadd_documents(chunks)
+            vectorstore.add_documents(chunks)
 
             logger.info(
                 "Policy document ingested",
@@ -165,9 +163,8 @@ class PolicyService:
         try:
             vectorstore = _get_vectorstore()
             # PGVector delete works by IDs or collection. 
-            # For specific document deletion, we use the metadata filter.
             # In langchain-postgres, we can use delete(filter={"source": doc.original_filename})
-            await vectorstore.adelete(filter={"source": doc.original_filename})
+            vectorstore.delete(filter={"source": doc.original_filename})
             logger.info(
                 "PGVector chunks deleted",
                 extra={"doc_id": doc_id, "filename": doc.original_filename},
