@@ -28,3 +28,4 @@ python-dotenv>=1.0.0
 aiofiles>=24.0.0
 apscheduler>=3.10.0
 tzdata
+langchain-postgres>=0.0.12

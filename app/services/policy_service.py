@@ -5,7 +5,7 @@ from pathlib import Path
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
-from langchain_chroma import Chroma
+from langchain_postgres.vectorstores import PGVector
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
@@ -23,12 +23,20 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 _splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
 
 
-def _get_vectorstore() -> Chroma:
-    """Return a LangChain Chroma wrapper backed by the persistent client."""
-    return Chroma(
+def _get_vectorstore() -> PGVector:
+    """Return a LangChain PGVector wrapper using the Aiven DB."""
+    # Convert asyncpg URL to standard postgresql:// for PGVector
+    sync_url = settings.database_url
+    if sync_url.startswith("postgresql+asyncpg://"):
+        sync_url = sync_url.replace("postgresql+asyncpg://", "postgresql://", 1)
+    elif sync_url.startswith("postgres://"):
+        sync_url = sync_url.replace("postgres://", "postgresql://", 1)
+
+    return PGVector(
+        embeddings=get_embeddings(),
         collection_name=POLICY_COLLECTION_NAME,
-        embedding_function=get_embeddings(),
-        persist_directory=settings.chroma_persist_dir,
+        connection=sync_url,
+        use_jsonb=True,
     )
 
 
@@ -133,19 +141,20 @@ class PolicyService:
         if not doc:
             raise DocumentNotFoundError(f"Policy document {doc_id} not found")
 
-        # Remove from ChromaDB by source metadata filter
+        # Remove from PGVector by source metadata filter
         try:
             vectorstore = _get_vectorstore()
-            collection = vectorstore._collection
-            # Delete by where clause on source metadata
-            collection.delete(where={"source": doc.original_filename})
+            # PGVector delete works by IDs or collection. 
+            # For specific document deletion, we use the metadata filter.
+            # In langchain-postgres, we can use delete(filter={"source": doc.original_filename})
+            await vectorstore.adelete(filter={"source": doc.original_filename})
             logger.info(
-                "ChromaDB chunks deleted",
+                "PGVector chunks deleted",
                 extra={"doc_id": doc_id, "filename": doc.original_filename},
             )
         except Exception as exc:
-            logger.exception("Failed to remove chunks from ChromaDB", extra={"doc_id": doc_id})
-            raise PolicyAgentError(f"ChromaDB deletion failed: {exc}") from exc
+            logger.exception("Failed to remove chunks from PGVector", extra={"doc_id": doc_id})
+            raise PolicyAgentError(f"PGVector deletion failed: {exc}") from exc
 
         doc.is_active = False
         await session.flush()

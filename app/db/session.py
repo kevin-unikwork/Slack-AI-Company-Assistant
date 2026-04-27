@@ -36,8 +36,11 @@ async def init_db() -> None:
     from app.db.models import Base  # avoid circular import
 
     async with engine.begin() as conn:
+        # Enable pgvector extension
+        from sqlalchemy import text
+        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         await conn.run_sync(Base.metadata.create_all)
-    logger.info("Database tables initialised")
+    logger.info("Database tables and pgvector extension initialised")
 
 
 async def close_db() -> None:

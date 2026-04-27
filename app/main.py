@@ -10,7 +10,6 @@ from app.api.routes.health import router as health_router
 from app.api.routes.hr import router as hr_router
 from app.api.routes.slack import router as slack_router
 from app.config import settings
-from app.db.chroma import close_chroma, get_policy_collection
 from app.db.session import close_db, init_db
 from app.utils.logger import get_logger, setup_logging
 from app.scheduler import start_scheduler, stop_scheduler
@@ -24,28 +23,22 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application startup and shutdown lifecycle."""
     logger.info("Starting up Slack Company Bot", extra={"env": settings.app_env})
     app.state.db_ready = False
-    app.state.chroma_ready = False
+    app.state.vector_ready = False
 
     try:
         await init_db()
         app.state.db_ready = True
-        logger.info("Database ready")
+        app.state.vector_ready = True # Initialized with pgvector
+        logger.info("PostgreSQL and pgvector ready")
     except Exception:
         logger.exception("Database init failed; running in degraded mode")
-
-    try:
-        collection = get_policy_collection()
-        app.state.chroma_ready = True
-        logger.info("ChromaDB ready", extra={"collection": collection.name, "count": collection.count()})
-    except Exception as exc:
-        logger.warning("ChromaDB init warning; continuing", extra={"error": str(exc)})
 
     # Start APScheduler
     start_scheduler()
 
     logger.info(
         "Bot ready",
-        extra={"db_ready": app.state.db_ready, "chroma_ready": app.state.chroma_ready},
+        extra={"db_ready": app.state.db_ready, "vector_ready": app.state.vector_ready},
     )
     yield
 
@@ -55,7 +48,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     
     if getattr(app.state, "db_ready", False):
         await close_db()
-    close_chroma()
     logger.info("Shutdown complete")
 
 
