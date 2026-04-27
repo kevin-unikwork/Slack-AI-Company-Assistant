@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import contextlib
 
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
@@ -87,11 +88,23 @@ async def handle_dm(event: dict, say, ack) -> None:
 
 async def _route_dm(slack_id: str, text: str, channel_id: str) -> None:
     """Background task: classify intent and dispatch to the right agent."""
-    # Send an initial "Thinking" message to show immediate progress
-    loading_ts = await slack_service.dm_user(
-        slack_id, 
-        "_Processing your request..._ :hourglass_flowing_sand:"
+    # Send an initial loading message in the same channel where the user asked.
+    loading_ts = await slack_service.post_to_channel(
+        channel_id,
+        "_Processing your request..._ :hourglass_flowing_sand:",
     )
+
+    async def _run_policy_loading_animation() -> None:
+        frames = [
+            "_Searching policy documents._ :mag_right:",
+            "_Searching policy documents.._ :mag_right:",
+            "_Searching policy documents..._ :mag_right:",
+        ]
+        i = 0
+        while True:
+            await slack_service.update_message(channel_id, loading_ts, frames[i % len(frames)])
+            i += 1
+            await asyncio.sleep(0.8)
     
     try:
         intent = await intent_router.classify_intent(slack_id, text)
@@ -102,9 +115,15 @@ async def _route_dm(slack_id: str, text: str, channel_id: str) -> None:
             await slack_service.delete_message(channel_id, loading_ts)
 
         elif intent == Intent.POLICY_QA:
-            await slack_service.update_message(channel_id, loading_ts, "_Searching policy documents..._ :mag_right:")
-            answer = await policy_agent.answer_policy_question(text, slack_id)
-            await slack_service.update_message(channel_id, loading_ts, answer)
+            animation_task = asyncio.create_task(_run_policy_loading_animation())
+            try:
+                answer = await policy_agent.answer_policy_question(text, slack_id)
+            finally:
+                animation_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await animation_task
+            await slack_service.delete_message(channel_id, loading_ts)
+            await slack_service.post_to_channel(channel_id, answer)
 
         elif intent == Intent.LEAVE_REQUEST:
             await slack_service.update_message(channel_id, loading_ts, "_Checking leave system..._ :calendar:")
@@ -121,15 +140,17 @@ async def _route_dm(slack_id: str, text: str, channel_id: str) -> None:
             # For chat, we can keep the loading state or just let the agent handle it
             await slack_service.update_message(channel_id, loading_ts, "_Thinking..._ :brain:")
             reply = await chat_agent.generate_chat_reply(slack_id, text)
-            await slack_service.update_message(channel_id, loading_ts, reply)
+            await slack_service.delete_message(channel_id, loading_ts)
+            await slack_service.post_to_channel(channel_id, reply)
 
     except Exception as exc:
         logger.exception("DM routing failed", extra={"slack_id": slack_id})
         error_msg = str(exc)
-        await slack_service.update_message(
-            channel_id, 
-            loading_ts, 
-            f":x: Something went wrong processing your message.\n*Error:* `{error_msg}`\n_Please check your environment variables (like OPENAI_API_KEY) or logs._"
+        with contextlib.suppress(Exception):
+            await slack_service.delete_message(channel_id, loading_ts)
+        await slack_service.post_to_channel(
+            channel_id,
+            f":x: Something went wrong processing your message.\n*Error:* `{error_msg}`\n_Please check your environment variables (like OPENAI_API_KEY) or logs._",
         )
 
 
@@ -238,13 +259,35 @@ async def cmd_policy(ack, command, say) -> None:
 async def _answer_policy_command(slack_id: str, channel_id: str, question: str) -> None:
     loading_ts = None
     try:
-        loading_ts = await slack_service.post_to_channel(channel_id, "_Searching policies..._ :mag_right:")
-        answer = await policy_agent.answer_policy_question(question, slack_id)
-        await slack_service.update_message(channel_id, loading_ts, answer)
+        loading_ts = await slack_service.post_to_channel(channel_id, "_Searching policy documents._ :mag_right:")
+
+        async def _run_policy_loading_animation() -> None:
+            frames = [
+                "_Searching policy documents._ :mag_right:",
+                "_Searching policy documents.._ :mag_right:",
+                "_Searching policy documents..._ :mag_right:",
+            ]
+            i = 0
+            while True:
+                await slack_service.update_message(channel_id, loading_ts, frames[i % len(frames)])
+                i += 1
+                await asyncio.sleep(0.8)
+
+        animation_task = asyncio.create_task(_run_policy_loading_animation())
+        try:
+            answer = await policy_agent.answer_policy_question(question, slack_id)
+        finally:
+            animation_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await animation_task
+        await slack_service.delete_message(channel_id, loading_ts)
+        await slack_service.post_to_channel(channel_id, answer)
     except Exception:
         logger.exception("Policy command failed", extra={"slack_id": slack_id})
         if loading_ts:
-            await slack_service.update_message(channel_id, loading_ts, ":x: Failed to retrieve policy information.")
+            with contextlib.suppress(Exception):
+                await slack_service.delete_message(channel_id, loading_ts)
+            await slack_service.post_to_channel(channel_id, ":x: Failed to retrieve policy information.")
         else:
             await slack_service.dm_user(slack_id, ":x: Failed to retrieve policy information.")
 
