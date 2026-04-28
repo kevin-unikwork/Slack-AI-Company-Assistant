@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 
 import redis.asyncio as aioredis
 from langchain_openai import ChatOpenAI
-from langchain.schema import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
