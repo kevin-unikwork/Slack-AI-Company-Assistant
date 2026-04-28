@@ -1,25 +1,30 @@
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
-from sqlalchemy.pool import NullPool
+from __future__ import annotations
+
+from sqlalchemy.ext.asyncio import (
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
+from sqlalchemy.pool import AsyncAdaptedQueuePool
 
 from app.config import settings
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-# Fail-safe for Railway/Aiven/Heroku URLs
-db_url = settings.database_url
-if db_url.startswith("postgres://"):
-    db_url = db_url.replace("postgres://", "postgresql+asyncpg://", 1)
-elif db_url.startswith("postgresql://") and "+asyncpg" not in db_url:
-    db_url = db_url.replace("postgresql://", "postgresql+asyncpg://", 1)
-
-# NullPool is recommended for async; avoids connection pool issues across event loops
+# AsyncAdaptedQueuePool is the correct pool class for async SQLAlchemy.
+# NullPool (no pooling) creates a fresh connection for every statement, which
+# is fine for scripts but adds latency and exhausts DB connections under load.
+# pool_size=5 + max_overflow=10 allows up to 15 concurrent connections.
 engine = create_async_engine(
-    db_url,
+    settings.database_url,
     echo=settings.debug,
-    poolclass=NullPool,
+    poolclass=AsyncAdaptedQueuePool,
+    pool_size=5,
+    max_overflow=10,
+    pool_pre_ping=True,   # verify connections are alive before use
+    pool_recycle=1800,    # recycle connections every 30 minutes
     future=True,
-    connect_args={"server_settings": {"timezone": "UTC"}},
 )
 
 AsyncSessionLocal: async_sessionmaker[AsyncSession] = async_sessionmaker(
@@ -33,14 +38,11 @@ AsyncSessionLocal: async_sessionmaker[AsyncSession] = async_sessionmaker(
 
 async def init_db() -> None:
     """Create all tables on startup (idempotent)."""
-    from app.db.models import Base  # avoid circular import
+    from app.db.models import Base  # avoid circular import at module level
 
     async with engine.begin() as conn:
-        # Enable pgvector extension
-        from sqlalchemy import text
-        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         await conn.run_sync(Base.metadata.create_all)
-    logger.info("Database tables and pgvector extension initialised")
+    logger.info("Database tables initialised")
 
 
 async def close_db() -> None:

@@ -6,6 +6,7 @@ HR admins can set dates via /setbirthday and /setanniversary slash commands.
 """
 import logging
 from datetime import datetime, timezone, timedelta, date
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select, extract
 from langchain_openai import ChatOpenAI
@@ -55,7 +56,8 @@ async def check_and_post_celebrations() -> int:
     Posts celebration messages to #general.
     Returns count of celebrations posted.
     """
-    today = date.today()
+    # Use IST explicitly so daily checks align with scheduler timezone.
+    today = datetime.now(ZoneInfo("Asia/Kolkata")).date()
     today_month = today.month
     today_day = today.day
     posted = 0
@@ -180,7 +182,8 @@ async def set_user_birthday(hr_slack_id: str, target_slack_id: str, birthday_str
             target_user.birthday = birthday_date
     
     formatted = birthday_date.strftime("%B %d, %Y")
-    return f":white_check_mark: Birthday for `{target_slack_id}` set to *{formatted}*."
+    display_name = target_user.full_name or target_user.slack_username or target_slack_id
+    return f":white_check_mark: Birthday for *{display_name}* set to *{formatted}*."
 
 
 async def set_user_anniversary(hr_slack_id: str, target_slack_id: str, date_str: str) -> str:
@@ -216,4 +219,5 @@ async def set_user_anniversary(hr_slack_id: str, target_slack_id: str, date_str:
             target_user.joined_at = join_date
 
     formatted = join_date.strftime("%B %d, %Y")
-    return f":white_check_mark: Join date for `{target_slack_id}` set to *{formatted}*."
+    display_name = target_user.full_name or target_user.slack_username or target_slack_id
+    return f":white_check_mark: Join date for *{display_name}* set to *{formatted}*."

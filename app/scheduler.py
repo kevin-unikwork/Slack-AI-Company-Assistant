@@ -47,11 +47,10 @@ def start_scheduler():
             replace_existing=True,
         )
 
-        # 3. Daily celebration check (Mon-Fri at 9:00 AM)
+        # 3. Daily celebration check (every day at 9:00 AM IST)
         scheduler.add_job(
             check_and_post_celebrations,
             CronTrigger(
-                day_of_week="mon-fri",
                 hour=9,
                 minute=0,
                 timezone="Asia/Kolkata",

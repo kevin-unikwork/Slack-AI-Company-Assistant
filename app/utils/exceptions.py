@@ -1,59 +1,54 @@
-from __future__ import annotations
-
-from typing import Optional
-
-
-class AppError(Exception):
-    """Base application exception."""
+class SlackBotBaseError(Exception):
+    """Base exception for all SlackBot errors."""
 
 
-class DatabaseError(AppError):
-    """Raised for database operation failures."""
+class SlackServiceError(SlackBotBaseError):
+    """Raised when a Slack API call fails."""
 
-
-class UserNotFoundError(AppError):
-    """Raised when an expected user does not exist."""
-
-
-class DocumentNotFoundError(AppError):
-    """Raised when an expected policy document does not exist."""
-
-
-class AuthenticationError(AppError):
-    """Raised for authentication failures."""
-
-
-class AuthorizationError(AppError):
-    """Raised when a caller does not have sufficient permissions."""
-
-
-class SlackServiceError(AppError):
-    """Raised for Slack API failures."""
-
-    def __init__(self, message: str, slack_error_code: Optional[str] = None) -> None:
+    def __init__(self, message: str, slack_error_code: str | None = None) -> None:
         super().__init__(message)
         self.slack_error_code = slack_error_code
 
 
-class IntentClassificationError(AppError):
-    """Raised when intent classification fails."""
+class IntentClassificationError(SlackBotBaseError):
+    """Raised when intent classification fails or returns an unknown intent."""
 
 
-class StandupAgentError(AppError):
-    """Raised for standup flow failures."""
+class PolicyAgentError(SlackBotBaseError):
+    """Raised when the policy RAG agent encounters an error."""
 
 
-class PolicyAgentError(AppError):
-    """Raised for policy ingestion or retrieval failures."""
+class StandupAgentError(SlackBotBaseError):
+    """Raised when the standup state machine encounters an error."""
 
 
-class BroadcastError(AppError):
-    """Raised for broadcast workflow failures."""
+class LeaveAgentError(SlackBotBaseError):
+    """Raised when the leave request conversation encounters an error."""
 
 
-class OnboardingError(AppError):
-    """Raised for onboarding workflow failures."""
+class BroadcastError(SlackBotBaseError):
+    """Raised when an HR broadcast fails."""
 
 
-class LeaveAgentError(AppError):
-    """Raised for leave workflow failures."""
+class OnboardingError(SlackBotBaseError):
+    """Raised when the onboarding flow fails."""
+
+
+class AuthenticationError(SlackBotBaseError):
+    """Raised for JWT auth failures."""
+
+
+class AuthorizationError(SlackBotBaseError):
+    """Raised when a user lacks required permissions (e.g. not HR admin)."""
+
+
+class UserNotFoundError(SlackBotBaseError):
+    """Raised when a user record is not found in the database."""
+
+
+class DatabaseError(SlackBotBaseError):
+    """Raised for unrecoverable database operation failures."""
+
+
+class DocumentNotFoundError(SlackBotBaseError):
+    """Raised when a policy document record is not found."""

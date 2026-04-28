@@ -1,63 +1,40 @@
-import os
+from __future__ import annotations
+
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_postgres import PGVector
-from sqlalchemy.ext.asyncio import AsyncSession
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_community.document_loaders import PyPDFLoader, TextLoader
+from langchain_chroma import Chroma
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from langchain_openai import OpenAIEmbeddings
+from app.db.chroma import POLICY_COLLECTION_NAME, get_chroma_client, get_embeddings
 from app.db.models.policy import PolicyDocument
+from app.utils.exceptions import DocumentNotFoundError, PolicyAgentError
 from app.utils.logger import get_logger
-from app.utils.exceptions import PolicyAgentError, DocumentNotFoundError
 
 logger = get_logger(__name__)
 
 UPLOAD_DIR = Path("./uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
 
-_splitter = RecursiveCharacterTextSplitter(chunk_size=1500, chunk_overlap=300)
+_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
 
 
-POLICY_COLLECTION_NAME = "company_policies"
-_embeddings = None
-_vectorstore = None
-
-def _get_embeddings() -> OpenAIEmbeddings:
-    global _embeddings
-    if _embeddings is None:
-        _embeddings = OpenAIEmbeddings(
-            model="text-embedding-ada-002",
-            openai_api_key=settings.openai_api_key,
-        )
-    return _embeddings
-
-def _get_vectorstore() -> PGVector:
-    """Return a LangChain PGVector wrapper using the Aiven DB."""
-    global _vectorstore
-    if _vectorstore is not None:
-        return _vectorstore
-
-    # Convert asyncpg URL to standard postgresql+psycopg:// for PGVector
-    sync_url = settings.database_url
-    if sync_url.startswith("postgresql+asyncpg://"):
-        sync_url = sync_url.replace("postgresql+asyncpg://", "postgresql+psycopg://", 1)
-    elif sync_url.startswith("postgres://"):
-        sync_url = sync_url.replace("postgres://", "postgresql+psycopg://", 1)
-    elif sync_url.startswith("postgresql://"):
-        sync_url = sync_url.replace("postgresql://", "postgresql+psycopg://", 1)
-
-    _vectorstore = PGVector(
-        embeddings=_get_embeddings(),
+def _get_vectorstore() -> Chroma:
+    """
+    Return a LangChain Chroma wrapper that uses the singleton PersistentClient.
+    Using the singleton avoids opening two clients on the same SQLite file,
+    which can cause lock errors with ChromaDB 0.5.x.
+    """
+    return Chroma(
+        client=get_chroma_client(),          # ← use singleton, NOT persist_directory
         collection_name=POLICY_COLLECTION_NAME,
-        connection=sync_url,
-        use_jsonb=True,
-        async_mode=False,
+        embedding_function=get_embeddings(),
     )
-    return _vectorstore
 
 
 class PolicyService:
@@ -76,54 +53,34 @@ class PolicyService:
         Save file to disk, load, chunk, embed, store in ChromaDB,
         then persist metadata in PostgreSQL.
         """
-        from langchain_community.document_loaders import PyMuPDFLoader, TextLoader
-
-        # Save temp file
         safe_name = f"{uuid.uuid4().hex}_{original_filename}"
         temp_path = UPLOAD_DIR / safe_name
         temp_path.write_bytes(file_bytes)
 
         try:
-            # Load document
             if file_type == "pdf":
-                loader = PyMuPDFLoader(str(temp_path))
+                loader = PyPDFLoader(str(temp_path))
             elif file_type == "txt":
                 loader = TextLoader(str(temp_path), encoding="utf-8")
             else:
                 raise PolicyAgentError(f"Unsupported file type: {file_type}")
 
             raw_docs = loader.load()
-            
-            # Post-process raw docs to fix vertical text issue
-            # If many lines have very few words, we join them
-            for doc in raw_docs:
-                # Replace single newlines with spaces if the line is short,
-                # but keep double newlines (paragraphs)
-                content = doc.page_content
-                # Heuristic: If lines are very short, it's likely fragmented
-                lines = content.split('\n')
-                if len(lines) > 5 and sum(len(l.split()) for l in lines) / len(lines) < 5:
-                    # Likely fragmented vertical text
-                    doc.page_content = " ".join(l.strip() for l in lines if l.strip())
-                else:
-                    # Just clean up stray single newlines that aren't paragraphs
-                    doc.page_content = content.replace('\n', ' ').replace('  ', ' ')
-
             chunks = _splitter.split_documents(raw_docs)
 
             if not chunks:
                 raise PolicyAgentError(f"No text content extracted from {original_filename}")
 
-            # Add source metadata to every chunk
             ts_str = datetime.now(timezone.utc).isoformat()
             for chunk in chunks:
-                chunk.metadata.update({
-                    "source": original_filename,
-                    "uploaded_at": ts_str,
-                    "doc_type": file_type,
-                })
+                chunk.metadata.update(
+                    {
+                        "source": original_filename,
+                        "uploaded_at": ts_str,
+                        "doc_type": file_type,
+                    }
+                )
 
-            # Embed and store in PGVector
             vectorstore = _get_vectorstore()
             vectorstore.add_documents(chunks)
 
@@ -136,7 +93,6 @@ class PolicyService:
                 },
             )
 
-            # Persist metadata to PostgreSQL
             doc = PolicyDocument(
                 filename=safe_name,
                 original_filename=original_filename,
@@ -152,13 +108,9 @@ class PolicyService:
         except PolicyAgentError:
             raise
         except Exception as exc:
-            logger.exception(
-                "Document ingestion failed",
-                extra={"filename": original_filename},
-            )
+            logger.exception("Document ingestion failed", extra={"filename": original_filename})
             raise PolicyAgentError(f"Ingestion failed: {exc}") from exc
         finally:
-            # Always clean up temp file
             if temp_path.exists():
                 temp_path.unlink()
 
@@ -172,79 +124,32 @@ class PolicyService:
 
     async def delete_document(self, session: AsyncSession, doc_id: int) -> None:
         """Soft-delete: mark is_active=False and remove chunks from ChromaDB."""
-        result = await session.execute(
-            select(PolicyDocument).where(PolicyDocument.id == doc_id)
-        )
+        result = await session.execute(select(PolicyDocument).where(PolicyDocument.id == doc_id))
         doc = result.scalar_one_or_none()
         if not doc:
             raise DocumentNotFoundError(f"Policy document {doc_id} not found")
 
-        # Remove from PGVector by source metadata filter
         try:
             vectorstore = _get_vectorstore()
-            # PGVector delete works by IDs or collection. 
-            # In langchain-postgres, we can use delete(filter={"source": doc.original_filename})
-            vectorstore.delete(filter={"source": doc.original_filename})
+            # ChromaDB where filter requires operator syntax: {"field": {"$eq": value}}
+            vectorstore._collection.delete(
+                where={"source": {"$eq": doc.original_filename}}
+            )
             logger.info(
-                "PGVector chunks deleted",
+                "ChromaDB chunks deleted",
                 extra={"doc_id": doc_id, "filename": doc.original_filename},
             )
         except Exception as exc:
-            logger.exception("Failed to remove chunks from PGVector", extra={"doc_id": doc_id})
-            raise PolicyAgentError(f"PGVector deletion failed: {exc}") from exc
+            logger.exception("Failed to remove chunks from ChromaDB", extra={"doc_id": doc_id})
+            raise PolicyAgentError(f"ChromaDB deletion failed: {exc}") from exc
 
         doc.is_active = False
         await session.flush()
 
     def get_retriever(self):
-        """Return a LangChain retriever (k=8 MMR for diversity)."""
+        """Return a LangChain retriever (k=4 cosine nearest neighbours)."""
         vectorstore = _get_vectorstore()
-        return vectorstore.as_retriever(
-            search_type="mmr",
-            search_kwargs={"k": 8, "fetch_k": 30}
-        )
-
-    def retrieve_documents(self, queries: list[str]) -> list[tuple[str, list]]:
-        """
-        Hybrid retrieval per query:
-        - MMR for diversity
-        - Similarity search for direct semantic nearest-neighbors
-        Returns a list of (query, docs) pairs.
-        """
-        vectorstore = _get_vectorstore()
-        retriever = self.get_retriever()
-        results: list[tuple[str, list]] = []
-
-        for query in queries:
-            mmr_docs = []
-            sim_docs = []
-            try:
-                mmr_docs = retriever.invoke(query)
-            except Exception:
-                logger.warning("MMR retrieval failed", extra={"query": query})
-            try:
-                sim_docs = vectorstore.similarity_search(query, k=8)
-            except Exception:
-                logger.warning("Similarity retrieval failed", extra={"query": query})
-
-            # Keep order stable and avoid duplicate chunk objects.
-            merged = []
-            seen = set()
-            for doc in [*mmr_docs, *sim_docs]:
-                metadata = getattr(doc, "metadata", {}) or {}
-                key = (
-                    metadata.get("source"),
-                    metadata.get("page"),
-                    " ".join((doc.page_content or "").split()),
-                )
-                if key in seen:
-                    continue
-                seen.add(key)
-                merged.append(doc)
-
-            results.append((query, merged))
-
-        return results
+        return vectorstore.as_retriever(search_kwargs={"k": 4})
 
 
 policy_service = PolicyService()
