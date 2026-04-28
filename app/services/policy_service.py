@@ -6,7 +6,10 @@ from pathlib import Path
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
-from langchain_chroma import Chroma
+try:
+    from langchain_chroma import Chroma
+except ImportError:  # Compatibility for environments without langchain-chroma package
+    from langchain_community.vectorstores import Chroma
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
