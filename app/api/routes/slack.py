@@ -322,6 +322,32 @@ async def cmd_feedback(ack, command) -> None:
     _spawn_background(_handle_feedback(slack_id, text), "feedback_command")
 
 
+@bolt_app.command("/reminder")
+async def cmd_reminder(ack, command) -> None:
+    """Set a natural-language reminder."""
+    await ack()
+    slack_id: str = command["user_id"]
+    text: str = command.get("text", "").strip()
+    if not text:
+        await slack_service.dm_user(
+            slack_id,
+            "Usage: `/reminder me in 2 hours to review the PR`",
+        )
+        return
+    _spawn_background(_run_reminder_command(slack_id, text), "reminder_command")
+
+
+async def _run_reminder_command(slack_id: str, text: str) -> None:
+    try:
+        from app.agents.reminder_agent import parse_and_create_reminder
+
+        result = await parse_and_create_reminder(slack_id, text)
+        await slack_service.dm_user(slack_id, result)
+    except Exception:
+        logger.exception("Reminder command failed", extra={"slack_id": slack_id})
+        await slack_service.dm_user(slack_id, ":x: Failed to set reminder. Please try again.")
+
+
 # ------------------------------------------------------------------ #
 # Celebrations (HR Admin)                                              #
 # ------------------------------------------------------------------ #
