@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import time
+import re
 
 import redis.asyncio as aioredis
 from fastapi import APIRouter, Request, Response
@@ -319,6 +320,94 @@ async def cmd_feedback(ack, command) -> None:
         await slack_service.dm_user(slack_id, "Usage: `/feedback Your feedback here`")
         return
     _spawn_background(_handle_feedback(slack_id, text), "feedback_command")
+
+
+# ------------------------------------------------------------------ #
+# Celebrations (HR Admin)                                              #
+# ------------------------------------------------------------------ #
+
+def _parse_target_and_date(text: str) -> tuple[str | None, str | None]:
+    """
+    Parse slash text for target user and date (YYYY-MM-DD).
+    Supports:
+    - <@U12345>
+    - @username
+    - unicode display names (everything before date)
+    """
+    text = (text or "").strip()
+    date_match = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", text)
+    if not date_match:
+        return None, None
+
+    date_str = date_match.group(1)
+    target_part = text[:date_match.start()].strip()
+    if not target_part:
+        return None, date_str
+
+    # Slack mention format: <@U123ABC|optional_name>
+    mention_match = re.search(r"<@([A-Za-z0-9]+)(?:\|[^>]+)?>", target_part)
+    if mention_match:
+        return mention_match.group(1), date_str
+
+    # Plain @username or free-form name
+    target = target_part.lstrip("@").strip()
+    return (target or None), date_str
+
+
+@bolt_app.command("/setbirthday")
+async def cmd_setbirthday(ack, command) -> None:
+    """HR Admin: Set a user's birthday. Usage: /setbirthday @user YYYY-MM-DD"""
+    await ack()
+    slack_id: str = command["user_id"]
+    text: str = command.get("text", "").strip()
+    _spawn_background(_run_setbirthday(slack_id, text), "setbirthday_command")
+
+
+async def _run_setbirthday(slack_id: str, text: str) -> None:
+    try:
+        from app.agents.celebration_agent import set_user_birthday
+
+        target_user, date_str = _parse_target_and_date(text)
+        if not target_user or not date_str:
+            await slack_service.dm_user(
+                slack_id,
+                "Usage: `/setbirthday @user 1995-06-15`",
+            )
+            return
+
+        result = await set_user_birthday(slack_id, target_user, date_str)
+        await slack_service.dm_user(slack_id, result)
+    except Exception:
+        logger.exception("Set birthday command failed", extra={"slack_id": slack_id})
+        await slack_service.dm_user(slack_id, ":x: Failed to set birthday. Please try again.")
+
+
+@bolt_app.command("/setanniversary")
+async def cmd_setanniversary(ack, command) -> None:
+    """HR Admin: Set a user's join date. Usage: /setanniversary @user YYYY-MM-DD"""
+    await ack()
+    slack_id: str = command["user_id"]
+    text: str = command.get("text", "").strip()
+    _spawn_background(_run_setanniversary(slack_id, text), "setanniversary_command")
+
+
+async def _run_setanniversary(slack_id: str, text: str) -> None:
+    try:
+        from app.agents.celebration_agent import set_user_anniversary
+
+        target_user, date_str = _parse_target_and_date(text)
+        if not target_user or not date_str:
+            await slack_service.dm_user(
+                slack_id,
+                "Usage: `/setanniversary @user 2023-01-10`",
+            )
+            return
+
+        result = await set_user_anniversary(slack_id, target_user, date_str)
+        await slack_service.dm_user(slack_id, result)
+    except Exception:
+        logger.exception("Set anniversary command failed", extra={"slack_id": slack_id})
+        await slack_service.dm_user(slack_id, ":x: Failed to set anniversary date. Please try again.")
 
 
 # ------------------------------------------------------------------ #
