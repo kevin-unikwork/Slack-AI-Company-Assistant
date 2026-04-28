@@ -1,7 +1,13 @@
-import chromadb
-from chromadb import Collection
-from langchain_openai import OpenAIEmbeddings
 from typing import Any
+
+try:
+    import chromadb
+    from chromadb import Collection
+except ImportError:  # optional dependency in some deployments
+    chromadb = None
+    Collection = Any  # type: ignore[misc,assignment]
+
+from langchain_openai import OpenAIEmbeddings
 
 from app.config import settings
 from app.utils.logger import get_logger
@@ -14,8 +20,13 @@ _embeddings: OpenAIEmbeddings | None = None
 POLICY_COLLECTION_NAME = "company_policies"
 
 
-def get_chroma_client() -> chromadb.PersistentClient:
+def get_chroma_client():
     """Return (or lazily create) the singleton ChromaDB persistent client."""
+    if chromadb is None:
+        raise RuntimeError(
+            "ChromaDB dependency is missing. Install `chromadb` (and `langchain-chroma` if needed) to use policy vector storage."
+        )
+
     global _chroma_client
     if _chroma_client is None:
         _chroma_client = chromadb.PersistentClient(path=settings.chroma_persist_dir)
