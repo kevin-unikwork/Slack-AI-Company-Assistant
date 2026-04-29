@@ -31,9 +31,27 @@ class StateManager:
         try:
             r = self.get_redis()
             await r.setex(key, ttl, val_str)
-        except RedisError:
+        except Exception:
             logger.warning("Redis unavailable, using in-memory state fallback", extra={"key": key})
             self._memory_setex(key, ttl, val_str)
+
+    async def set_if_not_exists(self, key: str, value: Any, ttl: int) -> bool:
+        """
+        Set state ONLY if key does not exist.
+        Returns True if set, False if already exists or on error.
+        """
+        val_str = json.dumps(value) if not isinstance(value, str) else value
+        try:
+            r = self.get_redis()
+            # result is True if set, None if not set
+            result = await r.set(key, val_str, ex=ttl, nx=True)
+            return result is True
+        except Exception:
+            logger.warning("Redis unavailable for NX check, using in-memory fallback", extra={"key": key})
+            if self._memory_get(key) is None:
+                self._memory_setex(key, ttl, val_str)
+                return True
+            return False
 
     async def get_state(self, key: str) -> Optional[str]:
         """Retrieve state. Returns None if not found or expired."""

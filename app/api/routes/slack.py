@@ -3,7 +3,6 @@ import logging
 import time
 import re
 
-import redis.asyncio as aioredis
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
 from slack_bolt.async_app import AsyncApp
@@ -12,21 +11,26 @@ from slack_bolt.adapter.fastapi.async_handler import AsyncSlackRequestHandler
 from app.config import settings
 from app.agents import intent_router
 from app.agents.intent_router import Intent
-from app.agents import standup_agent, policy_agent, leave_agent, onboarding_agent, general_chat_agent
+from app.agents import (
+    standup_agent,
+    policy_agent,
+    leave_agent,
+    onboarding_agent,
+    general_chat_agent,
+)
 from app.agents.broadcast_agent import send_broadcast
 from app.db.models.user import User
 from app.db.session import AsyncSessionLocal
 from app.services.slack_service import slack_service
 from app.utils.exceptions import AuthorizationError
 from app.utils.logger import get_logger
+from app.utils.state import state_manager
 from sqlalchemy import select
 
 logger = get_logger(__name__)
 
 # ------------------------------------------------------------------ #
 # Slack Bolt App                                                       #
-# NOTE: Do NOT set process_before_response=True when handlers call    #
-# await ack() explicitly — it causes double-ack errors.               #
 # ------------------------------------------------------------------ #
 
 bolt_app = AsyncApp(
@@ -41,21 +45,11 @@ router = APIRouter(tags=["slack"])
 _EVENT_DEDUPE_TTL_SECONDS = 300  # 5 minutes
 
 
-def _get_redis() -> aioredis.Redis:
-    return aioredis.from_url(settings.redis_url, decode_responses=True)
-
-
 async def _event_already_seen(event_id: str) -> bool:
-    """Redis-backed event deduplication. Falls back to allow-all on Redis error."""
-    try:
-        r = _get_redis()
-        key = f"slack_event:{event_id}"
-        result = await r.set(key, "1", ex=_EVENT_DEDUPE_TTL_SECONDS, nx=True)
-        # nx=True means set only if Not eXists; returns True if set, None if already existed
-        return result is None
-    except Exception:
-        logger.warning("Redis dedup check failed, allowing event through", extra={"event_id": event_id})
-        return False
+    """State-backed event deduplication. Falls back to memory if Redis is down."""
+    key = f"slack_event:{event_id}"
+    was_set = await state_manager.set_if_not_exists(key, "1", _EVENT_DEDUPE_TTL_SECONDS)
+    return not was_set
 
 
 def _spawn_background(coro, task_name: str) -> None:
@@ -85,11 +79,11 @@ async def slack_events(req: Request) -> Response:
     try:
         body = await req.json()
         if isinstance(body, dict):
-            # URL verification handshake — respond with challenge immediately
+            # URL verification handshake
             if body.get("type") == "url_verification":
                 return JSONResponse(content={"challenge": body.get("challenge", "")})
 
-            # Idempotency guard — use Redis so it survives restarts
+            # Idempotency guard
             if body.get("type") == "event_callback":
                 event_id = body.get("event_id")
                 if isinstance(event_id, str) and event_id:
@@ -112,7 +106,6 @@ async def handle_dm(event: dict, say, ack) -> None:
     """Route all DMs to the correct agent based on intent."""
     await ack()
 
-    # Ignore bot messages and subtypes (edited, deleted, etc.)
     if event.get("bot_id") or event.get("subtype"):
         return
 
@@ -171,59 +164,35 @@ async def _handle_feedback(slack_id: str, text: str) -> None:
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
-                        "text": f":speech_balloon: *Anonymous Employee Feedback*\n\n{text}",
+                        "text": f":speech_balloon: *Anonymous Feedback received:*\n\n{text}",
                     },
-                },
-                {
-                    "type": "context",
-                    "elements": [{"type": "mrkdwn", "text": "_Submitted anonymously via bot_"}],
-                },
+                }
             ],
         )
         await slack_service.dm_user(
             slack_id,
-            ":white_check_mark: Your feedback has been submitted *anonymously* to HR. Thank you!",
+            ":white_check_mark: Your feedback has been sent anonymously to HR.",
         )
-        logger.info("Anonymous feedback submitted", extra={"channel": settings.hr_private_channel})
     except Exception:
-        logger.exception("Feedback submission failed", extra={"slack_id": slack_id})
+        logger.exception("Feedback submission failed")
         await slack_service.dm_user(
-            slack_id, ":x: Failed to submit your feedback. Please try again."
+            slack_id,
+            ":x: Failed to send feedback. Please try again later.",
         )
 
 
 # ------------------------------------------------------------------ #
-# Team Join (new member onboarding)                                    #
+# Onboarding                                                           #
 # ------------------------------------------------------------------ #
 
 @bolt_app.event("team_join")
 async def handle_team_join(event: dict, ack) -> None:
-    """Welcome new workspace members."""
+    """Trigger onboarding when a new member joins the Slack workspace."""
     await ack()
-    user = event.get("user", {})
-    slack_id: str = user.get("id", "") if isinstance(user, dict) else str(user)
-    if not slack_id:
-        return
-    logger.info("team_join event received", extra={"slack_id": slack_id})
-    _spawn_background(onboarding_agent.onboard_new_member(slack_id), "onboard_new_member")
-
-
-# ------------------------------------------------------------------ #
-# App Mention                                                          #
-# ------------------------------------------------------------------ #
-
-@bolt_app.event("app_mention")
-async def handle_mention(event: dict, say, ack) -> None:
-    """Handle @bot mentions in channels."""
-    await ack()
-    slack_id: str = event.get("user", "")
-    text: str = event.get("text", "")
-    # Strip the mention tag
-    clean_text = " ".join(w for w in text.split() if not w.startswith("<@"))
-    if clean_text.strip():
-        _spawn_background(_route_dm(slack_id, clean_text.strip()), "route_mention_dm")
-    else:
-        await say("Hi! Mention me with a question, e.g. `@Bot What is the leave policy?`")
+    user_info = event.get("user", {})
+    slack_id = user_info.get("id")
+    if slack_id:
+        _spawn_background(onboarding_agent.start_onboarding(slack_id), "onboarding")
 
 
 # ------------------------------------------------------------------ #
@@ -232,71 +201,27 @@ async def handle_mention(event: dict, say, ack) -> None:
 
 @bolt_app.command("/standup")
 async def cmd_standup(ack, command) -> None:
-    """Manually trigger standup for the invoking user."""
+    """Manually trigger a standup for the user."""
     await ack()
     slack_id: str = command["user_id"]
-    _spawn_background(standup_agent.trigger_standup_for_user(slack_id), "trigger_standup_for_user")
+    _spawn_background(standup_agent.trigger_standup_for_all(), "manual_standup")
 
 
 @bolt_app.command("/policy")
 async def cmd_policy(ack, command) -> None:
-    """Answer a policy question inline."""
+    """Search company policies."""
     await ack()
     slack_id: str = command["user_id"]
-    question: str = command.get("text", "").strip()
-    if not question:
-        await slack_service.dm_user(slack_id, "Please include a question: `/policy What is the WFH policy?`")
+    text: str = command.get("text", "").strip()
+    if not text:
+        await slack_service.dm_user(slack_id, "Usage: `/policy What is the leave policy?`")
         return
-    _spawn_background(_answer_policy_command(slack_id, question), "policy_command")
+    _spawn_background(policy_agent.answer_policy_question(text, slack_id), "policy_search")
 
 
-async def _answer_policy_command(slack_id: str, question: str) -> None:
-    try:
-        await slack_service.dm_user(slack_id, ":hourglass: Looking that up...")
-        answer = await policy_agent.answer_policy_question(question, slack_id)
-        await slack_service.dm_user(slack_id, answer)
-    except Exception:
-        logger.exception("Policy command failed", extra={"slack_id": slack_id})
-        await slack_service.dm_user(slack_id, ":x: Failed to retrieve policy information.")
-
-
-@bolt_app.command("/announce")
-async def cmd_announce(ack, command) -> None:
-    """HR-only: broadcast an announcement to all employees."""
-    await ack()
-    slack_id: str = command["user_id"]
-    message: str = command.get("text", "").strip()
-    if not message:
-        await slack_service.dm_user(slack_id, "Usage: `/announce Your message here`")
-        return
-    _spawn_background(_run_broadcast_command(slack_id, message), "broadcast_command")
-
-
-async def _run_broadcast_command(slack_id: str, message: str) -> None:
-    try:
-        async with AsyncSessionLocal() as session:
-            async with session.begin():
-                result = await session.execute(select(User).where(User.slack_id == slack_id))
-                user = result.scalar_one_or_none()
-                if not user:
-                    await slack_service.dm_user(slack_id, ":x: Your user account was not found.")
-                    return
-                result_data = await send_broadcast(session, slack_id, message, user)
-        await slack_service.dm_user(
-            slack_id,
-            f":white_check_mark: Announcement sent to *{result_data['sent']}* employees "
-            f"({result_data['failed']} failed).",
-        )
-    except AuthorizationError:
-        await slack_service.dm_user(slack_id, ":no_entry: Only HR admins can send announcements.")
-    except Exception:
-        logger.exception("Broadcast command failed", extra={"slack_id": slack_id})
-        await slack_service.dm_user(slack_id, ":x: Failed to send announcement.")
-
-
-@bolt_app.command("/applyleave")
-async def cmd_leave(ack, command) -> None:
-    """Start a leave request conversation."""
+@bolt_app.command("/apply-leave")
+async def cmd_apply_leave(ack, command) -> None:
+    """Start leave application flow."""
     await ack()
     slack_id: str = command["user_id"]
     _spawn_background(leave_agent.start_leave_conversation(slack_id), "start_leave_conversation")
@@ -353,13 +278,7 @@ async def _run_reminder_command(slack_id: str, text: str) -> None:
 # ------------------------------------------------------------------ #
 
 def _parse_target_and_date(text: str) -> tuple[str | None, str | None]:
-    """
-    Parse slash text for target user and date (YYYY-MM-DD).
-    Supports:
-    - <@U12345>
-    - @username
-    - unicode display names (everything before date)
-    """
+    """Parse slash text for target user and date (YYYY-MM-DD)."""
     text = (text or "").strip()
     date_match = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", text)
     if not date_match:
@@ -370,19 +289,17 @@ def _parse_target_and_date(text: str) -> tuple[str | None, str | None]:
     if not target_part:
         return None, date_str
 
-    # Slack mention format: <@U123ABC|optional_name>
     mention_match = re.search(r"<@([A-Za-z0-9]+)(?:\|[^>]+)?>", target_part)
     if mention_match:
         return mention_match.group(1), date_str
 
-    # Plain @username or free-form name
     target = target_part.lstrip("@").strip()
     return (target or None), date_str
 
 
 @bolt_app.command("/setbirthday")
 async def cmd_setbirthday(ack, command) -> None:
-    """HR Admin: Set a user's birthday. Usage: /setbirthday @user YYYY-MM-DD"""
+    """HR Admin: Set a user's birthday."""
     await ack()
     slack_id: str = command["user_id"]
     text: str = command.get("text", "").strip()
@@ -410,7 +327,7 @@ async def _run_setbirthday(slack_id: str, text: str) -> None:
 
 @bolt_app.command("/setanniversary")
 async def cmd_setanniversary(ack, command) -> None:
-    """HR Admin: Set a user's join date. Usage: /setanniversary @user YYYY-MM-DD"""
+    """HR Admin: Set a user's join date."""
     await ack()
     slack_id: str = command["user_id"]
     text: str = command.get("text", "").strip()
