@@ -157,45 +157,70 @@ async def handle_team_join(event: dict, ack) -> None:
 
 @bolt_app.command("/help")
 async def cmd_help(ack, command) -> None:
+    """A professional, detailed guide for all bot features."""
     await ack()
     slack_id = command["user_id"]
     blocks = [
         {
             "type": "header",
-            "text": {"type": "plain_text", "text": "🤖 AI Assistant Help Guide", "emoji": True}
+            "text": {"type": "plain_text", "text": "📘 Professional Help & Usage Guide", "emoji": True}
         },
         {
             "type": "section",
-            "text": {"type": "mrkdwn", "text": "Here is how you can interact with me. Use these commands in any channel:"}
+            "text": {"type": "mrkdwn", "text": "Welcome to your AI-powered Company Assistant! This guide provides detailed instructions on how to use every feature. *All commands can be used in any channel or via Direct Message.*"}
         },
         {"type": "divider"},
         {
             "type": "section",
-            "text": {"type": "mrkdwn", "text": "🌟 *Appreciation*\n`/kudos @user <msg>` - Recognize a colleague's great work!"}
+            "text": {"type": "mrkdwn", "text": "*🌟 COMPANY CULTURE & APPRECIATION*"}
         },
         {
             "type": "section",
-            "text": {"type": "mrkdwn", "text": "📅 *Attendance & Leave*\n`/standup` - Start your daily update.\n`/applyleave` - Start the leave application flow."}
+            "text": {"type": "mrkdwn", "text": "• `/kudos @user <message>`\n_Recognize a colleague for their hard work. Your message will be sent to them privately and posted in the #general channel._\n*Example:* `/kudos @Shraddha for the amazing audit support!`"}
+        },
+        {"type": "divider"},
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": "*📅 HR, ATTENDANCE & STRUCTURE*"}
         },
         {
             "type": "section",
-            "text": {"type": "mrkdwn", "text": "📜 *Knowledge*\n`/policy <question>` - Search company rules and procedures."}
+            "text": {"type": "mrkdwn", "text": "• `/standup` - _Manually trigger your daily standup prompt if you missed the automated 9:00 AM DM._\n• `/applyleave` - _Start a conversational flow to apply for leaves or check your balance._\n• `/hierarchy` - _View the company's reporting structure and manager assignments._"}
+        },
+        {"type": "divider"},
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": "*📜 KNOWLEDGE & SEARCH*"}
         },
         {
             "type": "section",
-            "text": {"type": "mrkdwn", "text": "📣 *Communication*\n`/feedback <msg>` - Send anonymous feedback to HR.\n`/announce <msg>` - (HR Admin) Send a global broadcast."}
+            "text": {"type": "mrkdwn", "text": "• `/policy <your question>`\n_Ask our AI about company policies, leave rules, or office hours. It searches all official PDF documents._\n*Example:* `/policy What is the maternity leave policy?`"}
+        },
+        {"type": "divider"},
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": "*⏰ PRODUCTIVITY & FEEDBACK*"}
         },
         {
             "type": "section",
-            "text": {"type": "mrkdwn", "text": "⏰ *Tools*\n`/reminder <time> <task>` - Set personal reminders.\n`/hierarchy` - View company reporting structure."}
+            "text": {"type": "mrkdwn", "text": "• `/reminder <time> <task>`\n_Set a natural-language reminder for yourself._\n*Example:* `/reminder in 2 hours to review the PR`\n• `/feedback <message>`\n_Send a truly anonymous message to the HR team. Your identity is never revealed._"}
+        },
+        {"type": "divider"},
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": "*⚙️ HR ADMIN TOOLS (Admin Only)*"}
+        },
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": "• `/announce <message>` - _Broadcast a DM to every employee in the company._\n• `/assign @user to @manager` - _Update reporting relationships._\n• `/setbirthday @user YYYY-MM-DD` - _Schedule automated birthday celebrations._"}
         },
         {"type": "divider"},
         {
             "type": "context",
-            "elements": [{"type": "mrkdwn", "text": "💡 _Tip: You can also just DM me for general questions or greetings!_"}]
+            "elements": [{"type": "mrkdwn", "text": "💡 *Pro-Tip:* You can also just type 'Hello' or 'Who is HR?' in a Direct Message to me for a quick AI chat!"}]
         }
     ]
-    await slack_service.dm_user(slack_id, text="AI Assistant Help Guide", blocks=blocks)
+    await slack_service.dm_user(slack_id, text="Professional Help & Usage Guide", blocks=blocks)
 
 
 @bolt_app.command("/standup")
