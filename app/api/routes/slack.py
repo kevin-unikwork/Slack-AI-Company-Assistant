@@ -2,6 +2,7 @@ import asyncio
 import logging
 import time
 import re
+import json
 
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
@@ -17,6 +18,7 @@ from app.agents import (
     leave_agent,
     onboarding_agent,
     general_chat_agent,
+    kudos_agent,
 )
 from app.agents.broadcast_agent import send_broadcast
 from app.db.models.user import User
@@ -31,11 +33,14 @@ logger = get_logger(__name__)
 
 # ------------------------------------------------------------------ #
 # Slack Bolt App                                                       #
+# process_before_response=True ensures Slack gets a 200 OK immediately #
+# to avoid the 3-second timeout error.                                #
 # ------------------------------------------------------------------ #
 
 bolt_app = AsyncApp(
     token=settings.slack_bot_token,
     signing_secret=settings.slack_signing_secret,
+    process_before_response=True, 
 )
 
 handler = AsyncSlackRequestHandler(bolt_app)
@@ -46,7 +51,7 @@ _EVENT_DEDUPE_TTL_SECONDS = 300  # 5 minutes
 
 
 async def _event_already_seen(event_id: str) -> bool:
-    """State-backed event deduplication. Falls back to memory if Redis is down."""
+    """State-backed event deduplication."""
     key = f"slack_event:{event_id}"
     was_set = await state_manager.set_if_not_exists(key, "1", _EVENT_DEDUPE_TTL_SECONDS)
     return not was_set
@@ -65,31 +70,30 @@ def _spawn_background(coro, task_name: str) -> None:
 @router.post("/slack/events")
 async def slack_events(req: Request) -> Response:
     """
-    ULTRA-RESILIENT ENTRY POINT.
-    Responds to Slack instantly to prevent timeouts.
-    All processing (including handshakes and DMs) happens in the background.
+    Standard Slack entry point. 
+    Using Bolt's AsyncSlackRequestHandler with process_before_response=True.
     """
-    # 1. Spawn the entire handler in the background immediately
-    # We pass the request to a wrapper that handles handshakes + logic
-    asyncio.create_task(_resilient_handler_wrapper(req))
+    # Quick check for deduplication (only for Event API JSON payloads)
+    if req.headers.get("Content-Type") == "application/json":
+        try:
+            # We peek at the body bytes to check event_id without consuming the stream
+            body_bytes = await req.body()
+            body_json = json.loads(body_bytes)
+            
+            # Handshake
+            if body_json.get("type") == "url_verification":
+                return JSONResponse(content={"challenge": body_json.get("challenge", "")})
+            
+            # Deduplication
+            if body_json.get("type") == "event_callback":
+                event_id = body_json.get("event_id")
+                if event_id and await _event_already_seen(event_id):
+                    return Response(status_code=200)
+        except Exception:
+            pass
 
-    # 2. Return 200 OK to Slack immediately (within microseconds)
-    # This prevents the "app did not respond" error.
-    return Response(status_code=200)
-
-
-async def _resilient_handler_wrapper(req: Request):
-    """Background task to handle the actual Slack logic."""
-    try:
-        # We need to handle the URL verification (handshake) even in the background
-        # Note: Slack will accept a 200 OK for the handshake as long as the 
-        # challenge is eventually returned or if we handle it correctly.
-        # Actually, for the FIRST handshake, Slack needs the challenge in the response.
-        # But once the bot is verified, we can background everything.
-        
-        await handler.handle(req)
-    except Exception:
-        logger.exception("Resilient background handler failed")
+    # Pass everything to Bolt
+    return await handler.handle(req)
 
 
 # ------------------------------------------------------------------ #
@@ -97,10 +101,8 @@ async def _resilient_handler_wrapper(req: Request):
 # ------------------------------------------------------------------ #
 
 @bolt_app.event("message")
-async def handle_dm(event: dict, say, ack) -> None:
+async def handle_dm(event: dict, say) -> None:
     """Route all DMs to the correct agent based on intent."""
-    await ack()
-
     if event.get("bot_id") or event.get("subtype"):
         return
 
@@ -111,6 +113,8 @@ async def handle_dm(event: dict, say, ack) -> None:
         return
 
     logger.info("DM received", extra={"slack_id": slack_id, "text_preview": text[:80]})
+    # In process_before_response mode, we don't call ack().
+    # Logic is moved to background tasks.
     _spawn_background(_route_dm(slack_id, text), "route_dm")
 
 
@@ -139,13 +143,6 @@ async def _route_dm(slack_id: str, text: str) -> None:
 
     except Exception:
         logger.exception("DM routing failed", extra={"slack_id": slack_id})
-        try:
-            await slack_service.dm_user(
-                slack_id,
-                ":x: Something went wrong processing your message. Please try again in a moment.",
-            )
-        except Exception:
-            pass
 
 
 async def _handle_feedback(slack_id: str, text: str) -> None:
@@ -170,20 +167,15 @@ async def _handle_feedback(slack_id: str, text: str) -> None:
         )
     except Exception:
         logger.exception("Feedback submission failed")
-        await slack_service.dm_user(
-            slack_id,
-            ":x: Failed to send feedback. Please try again later.",
-        )
 
 
 # ------------------------------------------------------------------ #
-# Onboarding                                                         #
+# Onboarding                                                           #
 # ------------------------------------------------------------------ #
 
 @bolt_app.event("team_join")
-async def handle_team_join(event: dict, ack) -> None:
+async def handle_team_join(event: dict) -> None:
     """Trigger onboarding when a new member joins the Slack workspace."""
-    await ack()
     user_info = event.get("user", {})
     slack_id = user_info.get("id")
     if slack_id:
@@ -195,17 +187,28 @@ async def handle_team_join(event: dict, ack) -> None:
 # ------------------------------------------------------------------ #
 
 @bolt_app.command("/standup")
-async def cmd_standup(ack, command) -> None:
+async def cmd_standup(command) -> None:
     """Manually trigger a standup for the user."""
-    await ack()
     slack_id: str = command["user_id"]
     _spawn_background(standup_agent.trigger_standup_for_all(), "manual_standup")
 
 
+@bolt_app.command("/kudos")
+async def cmd_kudos(command) -> None:
+    """Give kudos to a colleague. Usage: /kudos @user <message>"""
+    slack_id: str = command["user_id"]
+    text: str = command.get("text", "").strip()
+    _spawn_background(_run_kudos_command(slack_id, text), "kudos_command")
+
+
+async def _run_kudos_command(slack_id: str, text: str) -> None:
+    result = await kudos_agent.handle_kudos_command(slack_id, text)
+    await slack_service.dm_user(slack_id, result)
+
+
 @bolt_app.command("/policy")
-async def cmd_policy(ack, command) -> None:
+async def cmd_policy(command) -> None:
     """Search company policies."""
-    await ack()
     slack_id: str = command["user_id"]
     text: str = command.get("text", "").strip()
     if not text:
@@ -215,25 +218,22 @@ async def cmd_policy(ack, command) -> None:
 
 
 @bolt_app.command("/apply-leave")
-async def cmd_apply_leave(ack, command) -> None:
+async def cmd_apply_leave(command) -> None:
     """Start leave application flow."""
-    await ack()
     slack_id: str = command["user_id"]
     _spawn_background(leave_agent.start_leave_conversation(slack_id), "start_leave_conversation")
 
 
 @bolt_app.command("/leave")
-async def cmd_leave_alias(ack, command) -> None:
-    """Optional alias for workspaces where /leave is available."""
-    await ack()
+async def cmd_leave_alias(command) -> None:
+    """Optional alias."""
     slack_id: str = command["user_id"]
     _spawn_background(leave_agent.start_leave_conversation(slack_id), "start_leave_conversation_alias")
 
 
 @bolt_app.command("/feedback")
-async def cmd_feedback(ack, command) -> None:
+async def cmd_feedback(command) -> None:
     """Submit anonymous feedback."""
-    await ack()
     slack_id: str = command["user_id"]
     text: str = command.get("text", "").strip()
     if not text:
@@ -243,9 +243,8 @@ async def cmd_feedback(ack, command) -> None:
 
 
 @bolt_app.command("/reminder")
-async def cmd_reminder(ack, command) -> None:
+async def cmd_reminder(command) -> None:
     """Set a natural-language reminder."""
-    await ack()
     slack_id: str = command["user_id"]
     text: str = command.get("text", "").strip()
     if not text:
@@ -260,12 +259,10 @@ async def cmd_reminder(ack, command) -> None:
 async def _run_reminder_command(slack_id: str, text: str) -> None:
     try:
         from app.agents.reminder_agent import parse_and_create_reminder
-
         result = await parse_and_create_reminder(slack_id, text)
         await slack_service.dm_user(slack_id, result)
     except Exception:
-        logger.exception("Reminder command failed", extra={"slack_id": slack_id})
-        await slack_service.dm_user(slack_id, ":x: Failed to set reminder. Please try again.")
+        logger.exception("Reminder command failed")
 
 
 # ------------------------------------------------------------------ #
@@ -293,9 +290,8 @@ def _parse_target_and_date(text: str) -> tuple[str | None, str | None]:
 
 
 @bolt_app.command("/setbirthday")
-async def cmd_setbirthday(ack, command) -> None:
+async def cmd_setbirthday(command) -> None:
     """HR Admin: Set a user's birthday."""
-    await ack()
     slack_id: str = command["user_id"]
     text: str = command.get("text", "").strip()
     _spawn_background(_run_setbirthday(slack_id, text), "setbirthday_command")
@@ -304,26 +300,19 @@ async def cmd_setbirthday(ack, command) -> None:
 async def _run_setbirthday(slack_id: str, text: str) -> None:
     try:
         from app.agents.celebration_agent import set_user_birthday
-
         target_user, date_str = _parse_target_and_date(text)
         if not target_user or not date_str:
-            await slack_service.dm_user(
-                slack_id,
-                "Usage: `/setbirthday @user 1995-06-15`",
-            )
+            await slack_service.dm_user(slack_id, "Usage: `/setbirthday @user 1995-06-15`")
             return
-
         result = await set_user_birthday(slack_id, target_user, date_str)
         await slack_service.dm_user(slack_id, result)
     except Exception:
-        logger.exception("Set birthday command failed", extra={"slack_id": slack_id})
-        await slack_service.dm_user(slack_id, ":x: Failed to set birthday. Please try again.")
+        logger.exception("Set birthday failed")
 
 
 @bolt_app.command("/setanniversary")
-async def cmd_setanniversary(ack, command) -> None:
+async def cmd_setanniversary(command) -> None:
     """HR Admin: Set a user's join date."""
-    await ack()
     slack_id: str = command["user_id"]
     text: str = command.get("text", "").strip()
     _spawn_background(_run_setanniversary(slack_id, text), "setanniversary_command")
@@ -332,20 +321,14 @@ async def cmd_setanniversary(ack, command) -> None:
 async def _run_setanniversary(slack_id: str, text: str) -> None:
     try:
         from app.agents.celebration_agent import set_user_anniversary
-
         target_user, date_str = _parse_target_and_date(text)
         if not target_user or not date_str:
-            await slack_service.dm_user(
-                slack_id,
-                "Usage: `/setanniversary @user 2023-01-10`",
-            )
+            await slack_service.dm_user(slack_id, "Usage: `/setanniversary @user 2023-01-10`")
             return
-
         result = await set_user_anniversary(slack_id, target_user, date_str)
         await slack_service.dm_user(slack_id, result)
     except Exception:
-        logger.exception("Set anniversary command failed", extra={"slack_id": slack_id})
-        await slack_service.dm_user(slack_id, ":x: Failed to set anniversary date. Please try again.")
+        logger.exception("Set anniversary failed")
 
 
 # ------------------------------------------------------------------ #
@@ -353,14 +336,12 @@ async def _run_setanniversary(slack_id: str, text: str) -> None:
 # ------------------------------------------------------------------ #
 
 @bolt_app.action("leave_approve")
-async def action_leave_approve(ack, body, action) -> None:
-    await ack()
+async def action_leave_approve(body, action) -> None:
     _spawn_background(_process_leave_action(body, action, "leave_approve"), "leave_approve_action")
 
 
 @bolt_app.action("leave_reject")
-async def action_leave_reject(ack, body, action) -> None:
-    await ack()
+async def action_leave_reject(body, action) -> None:
     _spawn_background(_process_leave_action(body, action, "leave_reject"), "leave_reject_action")
 
 
@@ -378,4 +359,4 @@ async def _process_leave_action(body: dict, action: dict, action_id: str) -> Non
             message_ts=message_ts,
         )
     except Exception:
-        logger.exception("Leave action handler failed", extra={"action": action_id})
+        logger.exception("Leave action failed")
