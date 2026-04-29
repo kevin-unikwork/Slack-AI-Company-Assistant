@@ -6,7 +6,7 @@ import json
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
 from slack_bolt.async_app import AsyncApp
-from slack_bolt.models.async_request import AsyncBoltRequest
+from slack_bolt.request.async_request import AsyncBoltRequest
 
 from app.config import settings
 from app.agents import intent_router
