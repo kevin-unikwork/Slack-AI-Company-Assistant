@@ -52,7 +52,7 @@ async def _event_already_seen(event_id: str) -> bool:
 
 @router.post("/slack/events")
 async def slack_events(req: Request) -> Response:
-    """Zero-Dependency Proxy Entry Point."""
+    """The Zero-Dependency Bridge."""
     body_bytes = await req.body()
     headers = dict(req.headers)
     
@@ -76,7 +76,6 @@ async def slack_events(req: Request) -> Response:
         except Exception:
             pass
 
-    # Isolated background processing
     asyncio.create_task(_dispatch_to_bolt(body_bytes, headers))
     return Response(status_code=200)
 
@@ -153,26 +152,50 @@ async def handle_team_join(event: dict, ack) -> None:
 
 
 # ------------------------------------------------------------------ #
-# Slash Commands - FULL LIST                                           #
+# Slash Commands                                                       #
 # ------------------------------------------------------------------ #
 
 @bolt_app.command("/help")
 async def cmd_help(ack, command) -> None:
     await ack()
     slack_id = command["user_id"]
-    help_text = """
-*Available Commands:*
-• `/standup` - Manually start your daily standup prompt.
-• `/policy <question>` - Ask anything about company rules, leaves, or info.
-• `/applyleave` or `/leave` - Start the flow to apply for leaves.
-• `/kudos @user <message>` - Give a public shout-out to a colleague!
-• `/reminder <time> <task>` - Set a personal reminder.
-• `/feedback <message>` - Send anonymous feedback to HR.
-• `/announce <message>` - Send a global DM to all employees (HR Only).
-• `/hierarchy` - View the company reporting structure.
-• `/assign @user to @manager` - (HR Admin) Assign a manager to an employee.
-    """
-    await slack_service.dm_user(slack_id, help_text)
+    blocks = [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": "🤖 AI Assistant Help Guide", "emoji": True}
+        },
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": "Here is how you can interact with me. Use these commands in any channel:"}
+        },
+        {"type": "divider"},
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": "🌟 *Appreciation*\n`/kudos @user <msg>` - Recognize a colleague's great work!"}
+        },
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": "📅 *Attendance & Leave*\n`/standup` - Start your daily update.\n`/applyleave` - Start the leave application flow."}
+        },
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": "📜 *Knowledge*\n`/policy <question>` - Search company rules and procedures."}
+        },
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": "📣 *Communication*\n`/feedback <msg>` - Send anonymous feedback to HR.\n`/announce <msg>` - (HR Admin) Send a global broadcast."}
+        },
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": "⏰ *Tools*\n`/reminder <time> <task>` - Set personal reminders.\n`/hierarchy` - View company reporting structure."}
+        },
+        {"type": "divider"},
+        {
+            "type": "context",
+            "elements": [{"type": "mrkdwn", "text": "💡 _Tip: You can also just DM me for general questions or greetings!_"}]
+        }
+    ]
+    await slack_service.dm_user(slack_id, text="AI Assistant Help Guide", blocks=blocks)
 
 
 @bolt_app.command("/standup")
@@ -213,7 +236,7 @@ async def _run_announce(slack_id: str, text: str) -> None:
                 return
             await broadcast_agent.send_broadcast(session, slack_id, text, user)
             await session.commit()
-            await slack_service.dm_user(slack_id, ":white_check_mark: Announcement sent to all active users.")
+            await slack_service.dm_user(slack_id, ":white_check_mark: Announcement sent successfully.")
     except Exception:
         logger.exception("Announce failed")
 
@@ -240,34 +263,27 @@ async def cmd_feedback(ack, command) -> None:
 @bolt_app.command("/assign")
 async def cmd_assign(ack, command) -> None:
     await ack()
-    slack_id = command["user_id"]
-    text = command.get("text", "").strip()
-    # Expecting: @user to @manager
-    match = re.search(r"<@([A-Z0-9]+)>.*?to.*?<@([A-Z0-9]+)>", text)
+    match = re.search(r"<@([A-Z0-9]+)>.*?to.*?<@([A-Z0-9]+)>", command.get("text", ""))
     if not match:
-        await slack_service.dm_user(slack_id, "Usage: `/assign @employee to @manager`")
+        await slack_service.dm_user(command["user_id"], "Usage: `/assign @employee to @manager`")
         return
-    _spawn_background(_run_assign(slack_id, match.group(1), match.group(2)), "assign_command")
+    _spawn_background(_run_assign(command["user_id"], match.group(1), match.group(2)), "assign_command")
 
 
 async def _run_assign(admin_id: str, employee_id: str, manager_id: str) -> None:
     try:
         async with AsyncSessionLocal() as session:
-            result = await session.execute(select(User).where(User.slack_id == admin_id))
-            admin = result.scalars().first()
+            res = await session.execute(select(User).where(User.slack_id == admin_id))
+            admin = res.scalars().first()
             if not admin or not admin.is_hr_admin:
                 await slack_service.dm_user(admin_id, ":x: Only HR Admins can assign managers.")
                 return
-            
             res = await session.execute(select(User).where(User.slack_id == employee_id))
             emp = res.scalars().first()
-            if not emp:
-                await slack_service.dm_user(admin_id, f":x: User <@{employee_id}> not found in database.")
-                return
-            
-            emp.manager_slack_id = manager_id
-            await session.commit()
-            await slack_service.dm_user(admin_id, f":white_check_mark: Assigned <@{manager_id}> as manager for <@{employee_id}>.")
+            if emp:
+                emp.manager_slack_id = manager_id
+                await session.commit()
+                await slack_service.dm_user(admin_id, f":white_check_mark: Assigned <@{manager_id}> as manager for <@{employee_id}>.")
     except Exception:
         logger.exception("Assign failed")
 
@@ -283,17 +299,11 @@ async def _run_hierarchy(slack_id: str) -> None:
         async with AsyncSessionLocal() as session:
             result = await session.execute(select(User).where(User.is_active == True))
             users = result.scalars().all()
-            
-            # Simple tree builder
             tree = "🏢 *Company Structure:*\n"
-            managers = {u.slack_id: u for u in users if any(x.manager_slack_id == u.slack_id for x in users)}
-            
-            for m_id, m in managers.items():
-                tree += f"\n• *<@{m_id}>* (Manager)\n"
-                reports = [u for u in users if u.manager_slack_id == m_id]
-                for r in reports:
+            for m in [u for u in users if any(x.manager_slack_id == u.slack_id for x in users)]:
+                tree += f"\n• *<@{m.slack_id}>*\n"
+                for r in [u for u in users if u.manager_slack_id == m.slack_id]:
                     tree += f"  └─ <@{r.slack_id}>\n"
-            
             await slack_service.dm_user(slack_id, tree)
     except Exception:
         logger.exception("Hierarchy failed")
@@ -317,31 +327,21 @@ async def _run_reminder_command(slack_id: str, text: str) -> None:
 
 
 @bolt_app.command("/setbirthday")
-async def cmd_setbirthday(ack, command) -> None:
-    await ack()
-    _spawn_background(_run_celebration_cmd(command["user_id"], command["text"], "birthday"), "set_birthday")
-
-
 @bolt_app.command("/setanniversary")
-async def cmd_setanniversary(ack, command) -> None:
+async def cmd_celebration(ack, command) -> None:
     await ack()
-    _spawn_background(_run_celebration_cmd(command["user_id"], command["text"], "anniversary"), "set_anniversary")
+    type = "birthday" if "birthday" in command["command"] else "anniversary"
+    _spawn_background(_run_celebration_cmd(command["user_id"], command["text"], type), f"set_{type}")
 
 
 async def _run_celebration_cmd(slack_id: str, text: str, type: str) -> None:
     try:
         from app.agents.celebration_agent import set_user_birthday, set_user_anniversary
-        # Basic parsing for @user YYYY-MM-DD
         match = re.search(r"<@([A-Z0-9]+)>.*?(\d{4}-\d{2}-\d{2})", text)
         if not match:
             await slack_service.dm_user(slack_id, f"Usage: `/set{type} @user YYYY-MM-DD`")
             return
-        
-        target, date_str = match.group(1), match.group(2)
-        if type == "birthday":
-            res = await set_user_birthday(slack_id, target, date_str)
-        else:
-            res = await set_user_anniversary(slack_id, target, date_str)
+        res = await (set_user_birthday if type == "birthday" else set_user_anniversary)(slack_id, match.group(1), match.group(2))
         await slack_service.dm_user(slack_id, res)
     except Exception:
         logger.exception(f"Set {type} failed")
@@ -357,10 +357,6 @@ async def _run_kudos_command(slack_id: str, text: str) -> None:
     result = await kudos_agent.handle_kudos_command(slack_id, text)
     await slack_service.dm_user(slack_id, result)
 
-
-# ------------------------------------------------------------------ #
-# Interactive Actions                                                  #
-# ------------------------------------------------------------------ #
 
 @bolt_app.action("leave_approve")
 @bolt_app.action("leave_reject")
