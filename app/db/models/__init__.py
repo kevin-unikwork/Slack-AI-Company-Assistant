@@ -5,6 +5,7 @@ from app.db.models.leave import LeaveRequest
 from app.db.models.broadcast import BroadcastLog
 from app.db.models.feedback import Feedback
 from app.db.models.reminder import Reminder
+from app.db.models.kudos import Kudos
 
 __all__ = [
     "Base",
@@ -16,4 +17,5 @@ __all__ = [
     "BroadcastLog",
     "Feedback",
     "Reminder",
-]
+    "Kudos",
+]

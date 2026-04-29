@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     standup_channel: str = "#standup"
     hr_private_channel: str = "#hr-feedback"
     onboarding_welcome_channel: str = "#general"
+    kudos_channel: str = "#general"
 
 
 settings = Settings()
