@@ -33,6 +33,9 @@ Format the following individual standup responses into a clean, scannable team s
 Group by: Yesterday's progress, Today's plans, Active blockers.
 Make it concise and professional. Use bullet points.
 If there are no blockers, say "No blockers reported."
+
+CRITICAL: You must use Slack's specific markdown formatting. 
+Use SINGLE asterisks for bold text (e.g., *Yesterday's Progress:*). DO NOT use double asterisks (**).
 """
 
 # ------------------------------------------------------------------ #
@@ -375,7 +378,7 @@ async def post_standup_summary() -> None:
         responses_json = json.dumps(
             [
                 {
-                    "user": r.user_slack_id,
+                    "user": f"<@{r.user_slack_id}>",
                     "yesterday": r.yesterday or "Not provided",
                     "today": r.today or "Not provided",
                     "blockers": r.blockers or "None",

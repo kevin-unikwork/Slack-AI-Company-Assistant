@@ -31,10 +31,10 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 480
 
-    standup_cron_hour: int = 9
+    standup_cron_hour: int = 15
     standup_cron_minute: int = 0
-    standup_summary_hour: int = 10
-    standup_summary_minute: int = 0
+    standup_summary_hour: int = 15
+    standup_summary_minute: int = 15
     standup_channel: str = "#standup"
     hr_private_channel: str = "#hr-feedback"
     onboarding_welcome_channel: str = "#general"
