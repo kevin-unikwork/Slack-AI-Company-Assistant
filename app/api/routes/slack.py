@@ -288,7 +288,7 @@ async def cmd_feedback(ack, command) -> None:
 @bolt_app.command("/assign")
 async def cmd_assign(ack, command) -> None:
     await ack()
-    match = re.search(r"<@([A-Z0-9]+)>.*?to.*?<@([A-Z0-9]+)>", command.get("text", ""))
+    match = re.search(r"<@([A-Z0-9]+)(?:\|[^>]+)?>.*?to.*?<@([A-Z0-9]+)(?:\|[^>]+)?>", command.get("text", ""))
     if not match:
         await slack_service.dm_user(command["user_id"], "Usage: `/assign @employee to @manager`")
         return
