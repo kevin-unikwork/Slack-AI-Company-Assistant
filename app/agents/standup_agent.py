@@ -155,15 +155,9 @@ async def trigger_standup_for_user(slack_id: str) -> bool:
                 
                 standup = existing_res.scalars().first()
                 if standup:
-                    if standup.is_complete:
-                        await slack_service.dm_user(
-                            slack_id, 
-                            ":white_check_mark: You have already completed your standup today!"
-                        )
-                        return False
-                    else:
-                        # Reset the step to 1 to restart the current day's standup
-                        standup.step = 1
+                    # [TEMPORARY FOR TESTING] Allow user to redo standup even if completed
+                    standup.step = 1
+                    standup.is_complete = False
                 else:
                     standup = StandupResponse(
                         user_slack_id=slack_id,
