@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import date, datetime, time, timezone
 from zoneinfo import ZoneInfo
 
@@ -286,7 +287,7 @@ async def handle_standup_response(slack_id: str, message: str) -> None:
 # ------------------------------------------------------------------ #
 
 async def post_standup_summary() -> None:
-    """Collect today's completed standups, generate AI summary, post to channel."""
+    """Collect today's completed standups, group by mentioned channel or manager, and generate tailored summaries."""
     start_of_day, end_of_day = _today_range()
 
     async with AsyncSessionLocal() as session:
@@ -313,73 +314,104 @@ async def post_standup_summary() -> None:
         )
         total_count: int = total_result.scalar_one()
 
-    if not completed:
-        logger.warning("No completed standups to summarise today")
-        await slack_service.post_to_channel(
-            settings.standup_channel,
-            ":information_source: No standup responses received today.",
-        )
-        return
+        if not completed:
+            logger.warning("No completed standups to summarise today")
+            await slack_service.post_to_channel(
+                settings.standup_channel,
+                ":information_source: No standup responses received today.",
+            )
+            return
 
-    responses_json = json.dumps(
-        [
-            {
-                "user": r.user_slack_id,
-                "yesterday": r.yesterday or "Not provided",
-                "today": r.today or "Not provided",
-                "blockers": r.blockers or "None",
-            }
-            for r in completed
-        ],
-        indent=2,
-    )
+        user_result = await session.execute(select(User))
+        users = list(user_result.scalars().all())
+        user_map = {u.slack_id: u for u in users}
 
-    try:
-        ai_response = await _llm.ainvoke(
-            [
-                SystemMessage(content=SUMMARY_SYSTEM_PROMPT),
-                HumanMessage(content=f"Responses:\n{responses_json}"),
-            ]
-        )
-        summary_text: str = ai_response.content
-    except Exception:
-        logger.exception("LLM summary generation failed")
-        summary_text = "*(Summary generation failed — raw responses available in DB)*"
+    # Grouping structure: { "destination_id": [StandupResponse, ...] }
+    destinations: dict[str, list[StandupResponse]] = {}
+
+    for r in completed:
+        combined_text = f"{r.yesterday or ''} {r.today or ''} {r.blockers or ''}"
+        # Match Slack channel tags: <#C1234567|channel-name> or <#C1234567>
+        matches = re.findall(r"<#([A-Z0-9]+)(?:\|[^>]+)?>", combined_text)
+        
+        if matches:
+            # Add this response to each unique channel mentioned
+            for ch_id in set(matches):
+                if ch_id not in destinations:
+                    destinations[ch_id] = []
+                destinations[ch_id].append(r)
+        else:
+            # Fallback to manager or global channel
+            u = user_map.get(r.user_slack_id)
+            dest_id = u.manager_slack_id if u and u.manager_slack_id else settings.standup_channel
+            if dest_id not in destinations:
+                destinations[dest_id] = []
+            destinations[dest_id].append(r)
 
     date_str = date.today().strftime("%A, %d %B %Y")
-    blocks = [
-        {
-            "type": "header",
-            "text": {"type": "plain_text", "text": f"Team Standup — {date_str}", "emoji": True},
-        },
-        {"type": "section", "text": {"type": "mrkdwn", "text": summary_text}},
-        {"type": "divider"},
-        {
-            "type": "context",
-            "elements": [
+    
+    for dest_id, dest_responses in destinations.items():
+        responses_json = json.dumps(
+            [
                 {
-                    "type": "mrkdwn",
-                    "text": f"_{len(completed)}/{total_count} team members responded_",
+                    "user": r.user_slack_id,
+                    "yesterday": r.yesterday or "Not provided",
+                    "today": r.today or "Not provided",
+                    "blockers": r.blockers or "None",
                 }
+                for r in dest_responses
             ],
-        },
-    ]
+            indent=2,
+        )
 
-    await slack_service.post_to_channel(
-        settings.standup_channel,
-        text=f"Team Standup Summary — {date_str}",
-        blocks=blocks,
-    )
-    
-    async with AsyncSessionLocal() as session:
-        async with session.begin():
-            summary = StandupSummary(
-                date=datetime.now(timezone.utc).replace(tzinfo=None),
-                summary_text=summary_text,
-                channel_id=settings.standup_channel,
-                responded_count=len(completed),
-                total_count=total_count,
+        try:
+            ai_response = await _llm.ainvoke(
+                [
+                    SystemMessage(content=SUMMARY_SYSTEM_PROMPT),
+                    HumanMessage(content=f"Responses:\n{responses_json}"),
+                ]
             )
-            session.add(summary)
-    
-    logger.info("Standup summary posted", extra={"responded": len(completed)})
+            summary_text: str = ai_response.content
+        except Exception:
+            logger.exception(f"LLM summary generation failed for {dest_id}")
+            summary_text = "*(Summary generation failed — raw responses available in DB)*"
+
+        blocks = [
+            {
+                "type": "header",
+                "text": {"type": "plain_text", "text": f"Project Standup Summary — {date_str}", "emoji": True},
+            },
+            {"type": "section", "text": {"type": "mrkdwn", "text": summary_text}},
+            {"type": "divider"},
+            {
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": f"_{len(dest_responses)} updates in this project stream_",
+                    }
+                ],
+            },
+        ]
+
+        try:
+            # If destination is a User ID (U... or W...) send as DM
+            if dest_id.startswith("U") or dest_id.startswith("W"):
+                await slack_service.dm_user(dest_id, text=f"Project Standup Summary — {date_str}", blocks=blocks)
+            else:
+                await slack_service.post_to_channel(dest_id, text=f"Project Standup Summary — {date_str}", blocks=blocks)
+        except Exception as e:
+            logger.exception(f"Failed to post standup summary to {dest_id}: {e}")
+
+        async with AsyncSessionLocal() as session:
+            async with session.begin():
+                summary = StandupSummary(
+                    date=datetime.now(timezone.utc).replace(tzinfo=None),
+                    summary_text=summary_text,
+                    channel_id=dest_id,
+                    responded_count=len(dest_responses),
+                    total_count=total_count,
+                )
+                session.add(summary)
+
+    logger.info("Project-based standup summaries posted", extra={"groups": len(destinations)})
