@@ -89,8 +89,10 @@ async def trigger_standup_for_all() -> int:
                         )
                     )
                     if existing_res.scalars().first():
-                        logger.info(f"User {user.slack_id} already has a standup today, skipping trigger")
-                        continue
+                        # [TEMPORARY FOR TESTING] Ignore duplicate check
+                        # logger.info(f"User {user.slack_id} already has a standup today, skipping trigger")
+                        # continue
+                        pass
 
                     # Create DB record
                     standup = StandupResponse(
