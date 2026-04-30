@@ -288,11 +288,11 @@ async def cmd_feedback(ack, command) -> None:
 @bolt_app.command("/assign")
 async def cmd_assign(ack, command) -> None:
     await ack()
-    match = re.search(r"<@([A-Z0-9]+)(?:\|[^>]+)?>.*?to.*?<@([A-Z0-9]+)(?:\|[^>]+)?>", command.get("text", ""))
-    if not match:
+    mentions = re.findall(r"<@([A-Z0-9]+)(?:\|[^>]+)?>", command.get("text", ""))
+    if len(mentions) < 2:
         await slack_service.dm_user(command["user_id"], "Usage: `/assign @employee to @manager`")
         return
-    _spawn_background(_run_assign(command["user_id"], match.group(1), match.group(2)), "assign_command")
+    _spawn_background(_run_assign(command["user_id"], mentions[0], mentions[1]), "assign_command")
 
 
 async def _run_assign(admin_id: str, employee_id: str, manager_id: str) -> None:
