@@ -288,11 +288,27 @@ async def cmd_feedback(ack, command) -> None:
 @bolt_app.command("/assign")
 async def cmd_assign(ack, command) -> None:
     await ack()
-    mentions = re.findall(r"<@([A-Z0-9]+)(?:\|[^>]+)?>", command.get("text", ""))
-    if len(mentions) < 2:
-        await slack_service.dm_user(command["user_id"], "Usage: `/assign @employee to @manager`")
+    # Extract all words starting with @ or standard <@ID> mentions
+    potential_mentions = re.findall(r"(?:<@([A-Z0-9]+)(?:\|[^>]+)?>|@([^\s]+))", command.get("text", ""))
+    
+    resolved_ids = []
+    for m in potential_mentions:
+        slack_id, plain_name = m
+        if slack_id:
+            resolved_ids.append(slack_id)
+        elif plain_name:
+            # Try to resolve plain name to ID
+            users = await slack_service.get_all_workspace_users()
+            for u in users:
+                if plain_name.lower() in [u.get("name", "").lower(), u.get("real_name", "").lower(), u.get("profile", {}).get("display_name", "").lower()]:
+                    resolved_ids.append(u["id"])
+                    break
+    
+    if len(resolved_ids) < 2:
+        await slack_service.dm_user(command["user_id"], "Usage: `/assign @employee to @manager` (Please make sure to @mention both users)")
         return
-    _spawn_background(_run_assign(command["user_id"], mentions[0], mentions[1]), "assign_command")
+        
+    _spawn_background(_run_assign(command["user_id"], resolved_ids[0], resolved_ids[1]), "assign_command")
 
 
 async def _run_assign(admin_id: str, employee_id: str, manager_id: str) -> None:
