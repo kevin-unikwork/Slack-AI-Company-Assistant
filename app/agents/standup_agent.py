@@ -361,13 +361,13 @@ async def post_standup_summary() -> None:
                 extracted_channels.add(channel_map[name])
         
         if extracted_channels:
-            # Add this response to each unique channel mentioned
+            # Case 1: Channels mentioned - send ONLY to those channels
             for ch_id in extracted_channels:
                 if ch_id not in destinations:
                     destinations[ch_id] = []
                 destinations[ch_id].append(r)
         else:
-            # Fallback to manager or global channel
+            # Case 2: No channels mentioned - fallback to Manager OR Global
             u = user_map.get(r.user_slack_id)
             dest_id = u.manager_slack_id if u and u.manager_slack_id else settings.standup_channel
             if dest_id not in destinations:
