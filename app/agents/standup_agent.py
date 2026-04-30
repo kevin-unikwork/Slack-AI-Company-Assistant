@@ -92,7 +92,7 @@ async def trigger_standup_for_all() -> int:
                     standup = StandupResponse(
                         user_slack_id=user.slack_id,
                         step=1,
-                        date=datetime.now(timezone.utc),
+                        date=datetime.now(timezone.utc).replace(tzinfo=None),
                     )
                     session.add(standup)
 
@@ -167,7 +167,7 @@ async def trigger_standup_for_user(slack_id: str) -> bool:
                     standup = StandupResponse(
                         user_slack_id=slack_id,
                         step=1,
-                        date=datetime.now(timezone.utc),
+                        date=datetime.now(timezone.utc).replace(tzinfo=None),
                     )
                     session.add(standup)
 
@@ -374,7 +374,7 @@ async def post_standup_summary() -> None:
     async with AsyncSessionLocal() as session:
         async with session.begin():
             summary = StandupSummary(
-                date=datetime.now(timezone.utc),
+                date=datetime.now(timezone.utc).replace(tzinfo=None),
                 summary_text=summary_text,
                 channel_id=settings.standup_channel,
                 responded_count=len(completed),
