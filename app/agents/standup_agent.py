@@ -326,17 +326,44 @@ async def post_standup_summary() -> None:
         users = list(user_result.scalars().all())
         user_map = {u.slack_id: u for u in users}
 
+        # Fetch channel map to resolve plain text #mentions
+        channel_map = {}
+        try:
+            cursor = None
+            while True:
+                resp = await slack_service._client.conversations_list(
+                    types="public_channel,private_channel",
+                    cursor=cursor,
+                    limit=500
+                )
+                for ch in resp.get("channels", []):
+                    channel_map[ch["name"]] = ch["id"]
+                cursor = resp.get("response_metadata", {}).get("next_cursor")
+                if not cursor:
+                    break
+        except Exception:
+            logger.warning("Failed to fetch channel map for plain text resolution")
+
     # Grouping structure: { "destination_id": [StandupResponse, ...] }
     destinations: dict[str, list[StandupResponse]] = {}
 
     for r in completed:
         combined_text = f"{r.yesterday or ''} {r.today or ''} {r.blockers or ''}"
-        # Match Slack channel tags: <#C1234567|channel-name> or <#C1234567>
-        matches = re.findall(r"<#([A-Z0-9]+)(?:\|[^>]+)?>", combined_text)
         
-        if matches:
+        # 1. Match Slack channel tags: <#C1234567|channel-name> or <#C1234567>
+        tag_matches = re.findall(r"<#([A-Z0-9]+)(?:\|[^>]+)?>", combined_text)
+        
+        # 2. Match plain-text hashtags: #social
+        plain_matches = re.findall(r"(?:^|\s)#([a-zA-Z0-9_-]+)", combined_text)
+        
+        extracted_channels = set(tag_matches)
+        for name in plain_matches:
+            if name in channel_map:
+                extracted_channels.add(channel_map[name])
+        
+        if extracted_channels:
             # Add this response to each unique channel mentioned
-            for ch_id in set(matches):
+            for ch_id in extracted_channels:
                 if ch_id not in destinations:
                     destinations[ch_id] = []
                 destinations[ch_id].append(r)
