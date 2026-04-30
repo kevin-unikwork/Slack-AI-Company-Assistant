@@ -39,10 +39,10 @@ If there are no blockers, say "No blockers reported."
 # ------------------------------------------------------------------ #
 
 def _today_range() -> tuple[datetime, datetime]:
-    """Return (start_of_day, end_of_day) as UTC-aware datetimes for today in IST."""
+    """Return (start_of_day, end_of_day) as UTC-naive datetimes for today in IST."""
     today_ist = datetime.now(_IST).date()
-    start = datetime.combine(today_ist, time.min, tzinfo=_IST).astimezone(timezone.utc)
-    end = datetime.combine(today_ist, time.max, tzinfo=_IST).astimezone(timezone.utc)
+    start = datetime.combine(today_ist, time.min, tzinfo=_IST).astimezone(timezone.utc).replace(tzinfo=None)
+    end = datetime.combine(today_ist, time.max, tzinfo=_IST).astimezone(timezone.utc).replace(tzinfo=None)
     return start, end
 
 
