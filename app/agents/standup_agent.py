@@ -130,6 +130,78 @@ async def trigger_standup_for_all() -> int:
     return count
 
 
+async def trigger_standup_for_user(slack_id: str) -> bool:
+    """
+    DM a specific user to kick off their standup manually via the /standup command.
+    """
+    logger.info(f"Triggering standup manually for user {slack_id}")
+    today_ist = datetime.now(_IST).date()
+    today_str = today_ist.isoformat()
+
+    async with AsyncSessionLocal() as session:
+        async with session.begin():
+            try:
+                start, end = _today_range()
+                existing_res = await session.execute(
+                    select(StandupResponse).where(
+                        and_(
+                            StandupResponse.user_slack_id == slack_id,
+                            StandupResponse.date >= start,
+                            StandupResponse.date <= end
+                        )
+                    )
+                )
+                
+                standup = existing_res.scalars().first()
+                if standup:
+                    if standup.is_complete:
+                        await slack_service.dm_user(
+                            slack_id, 
+                            ":white_check_mark: You have already completed your standup today!"
+                        )
+                        return False
+                    else:
+                        # Reset the step to 1 to restart the current day's standup
+                        standup.step = 1
+                else:
+                    standup = StandupResponse(
+                        user_slack_id=slack_id,
+                        step=1,
+                        date=datetime.now(timezone.utc),
+                    )
+                    session.add(standup)
+
+                await state_manager.set_state(STANDUP_KEY_STEP.format(slack_id=slack_id), "1", STANDUP_TTL)
+                await state_manager.set_state(STANDUP_KEY_DATE.format(slack_id=slack_id), today_str, STANDUP_TTL)
+
+                blocks = [
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": ":wave: *Time for your daily standup.*",
+                        },
+                    },
+                    {
+                        "type": "section",
+                        "text": {"type": "mrkdwn", "text": "What did you work on *yesterday*?"},
+                    },
+                    {"type": "divider"},
+                ]
+                await slack_service.dm_user(
+                    slack_id,
+                    text="Time for your daily standup. What did you work on yesterday?",
+                    blocks=blocks,
+                )
+                logger.info("Manual standup triggered successfully", extra={"slack_id": slack_id})
+                return True
+
+            except Exception:
+                logger.exception(f"Failed to manually trigger standup for user {slack_id}")
+                await slack_service.dm_user(slack_id, ":x: Failed to start standup. Please try again.")
+                return False
+
+
 # ------------------------------------------------------------------ #
 # Response collection (called on each DM)                              #
 # ------------------------------------------------------------------ #

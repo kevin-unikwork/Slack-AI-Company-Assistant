@@ -226,7 +226,7 @@ async def cmd_help(ack, command) -> None:
 @bolt_app.command("/standup")
 async def cmd_standup(ack, command) -> None:
     await ack()
-    _spawn_background(standup_agent.trigger_standup_for_all(), "manual_standup")
+    _spawn_background(standup_agent.trigger_standup_for_user(command["user_id"]), "manual_standup")
 
 
 @bolt_app.command("/policy")
