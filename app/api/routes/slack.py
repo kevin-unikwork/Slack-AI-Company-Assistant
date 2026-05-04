@@ -457,3 +457,67 @@ async def _run_vault_command(slack_id: str, text: str) -> None:
     except Exception:
         logger.exception("Vault command failed")
         await slack_service.dm_user(slack_id, ":warning: Vault error occurred. Please try again later.")
+
+
+@bolt_app.command("/setmessage")
+async def cmd_setmessage(ack, command) -> None:
+    await ack()
+    _spawn_background(
+        _run_setmessage_command(command["user_id"], command.get("text", "").strip()),
+        "setmessage_command",
+    )
+
+
+async def _run_setmessage_command(slack_id: str, text: str) -> None:
+    from app.agents.celebration_agent import (
+        set_celebration_message,
+        view_celebration_message,
+        reset_celebration_message,
+    )
+
+    try:
+        if not text:
+            usage = (
+                ":scroll: *Celebration Message Manager (HR Admin Only):*\n\n"
+                "*Set a message:*\n"
+                "• `/setmessage set birthday <your message>`\n"
+                "• `/setmessage set anniversary <your message>`\n\n"
+                "*View current templates:*\n"
+                "• `/setmessage view birthday`\n"
+                "• `/setmessage view anniversary`\n\n"
+                "*Reset to AI-generated:*\n"
+                "• `/setmessage reset birthday`\n"
+                "• `/setmessage reset anniversary`\n\n"
+                "_Available variables:_ `{name}`, `{years}`, `{date}`\n"
+                "_Example:_ `/setmessage set birthday Happy Birthday {name}! 🎂 Wishing you a great year ahead from all of us!`"
+            )
+            await slack_service.dm_user(slack_id, usage)
+            return
+
+        parts = text.split(maxsplit=2)
+        action = parts[0].lower()
+
+        if action == "set" and len(parts) >= 3:
+            template_type = parts[1].lower()
+            message = parts[2]
+            res = await set_celebration_message(slack_id, template_type, message)
+            await slack_service.dm_user(slack_id, res)
+
+        elif action == "view" and len(parts) >= 2:
+            template_type = parts[1].lower()
+            res = await view_celebration_message(slack_id, template_type)
+            await slack_service.dm_user(slack_id, res)
+
+        elif action == "reset" and len(parts) >= 2:
+            template_type = parts[1].lower()
+            res = await reset_celebration_message(slack_id, template_type)
+            await slack_service.dm_user(slack_id, res)
+
+        else:
+            await slack_service.dm_user(
+                slack_id,
+                ":x: Invalid command. Use `/setmessage` to see usage guide.",
+            )
+    except Exception:
+        logger.exception("Setmessage command failed")
+        await slack_service.dm_user(slack_id, ":warning: An error occurred. Please try again.")

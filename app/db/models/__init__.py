@@ -7,6 +7,7 @@ from app.db.models.feedback import Feedback
 from app.db.models.reminder import Reminder
 from app.db.models.kudos import Kudos
 from app.db.models.vault import UserVault
+from app.db.models.celebration_template import CelebrationTemplate
 
 __all__ = [
     "Base",
@@ -20,4 +21,5 @@ __all__ = [
     "Reminder",
     "Kudos",
     "UserVault",
+    "CelebrationTemplate",
 ]

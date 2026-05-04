@@ -1,19 +1,21 @@
 """
 Celebration Agent — Birthday & Work Anniversary automation.
 
-Runs daily via Celery Beat to post celebration messages in #general.
+Runs daily via scheduler to post celebration messages in #general.
 HR admins can set dates via /setbirthday and /setanniversary slash commands.
+HR admins can set custom message templates via /setmessage command.
 """
 import logging
 from datetime import datetime, timezone, timedelta, date
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select, extract
+from sqlalchemy import select, extract, and_
 from langchain_openai import ChatOpenAI
 
 from app.config import settings
 from app.db.session import AsyncSessionLocal
 from app.db.models.user import User
+from app.db.models.celebration_template import CelebrationTemplate
 from app.services.slack_service import slack_service
 from app.utils.logger import get_logger
 
@@ -21,6 +23,54 @@ logger = get_logger(__name__)
 
 CELEBRATION_CHANNEL = settings.onboarding_welcome_channel  # #general
 _llm = ChatOpenAI(model="gpt-4o", temperature=0.8, openai_api_key=settings.openai_api_key)
+
+
+# ------------------------------------------------------------------ #
+# Custom Template Logic                                               #
+# ------------------------------------------------------------------ #
+
+async def _get_custom_template(template_type: str, target_slack_id: str) -> str | None:
+    """
+    Look up a custom celebration template.
+    Priority: per-user template > global template > None (fallback to AI).
+    """
+    async with AsyncSessionLocal() as session:
+        # 1. Check for per-user template
+        result = await session.execute(
+            select(CelebrationTemplate).where(
+                CelebrationTemplate.template_type == template_type,
+                CelebrationTemplate.target_slack_id == target_slack_id,
+                CelebrationTemplate.is_active == True,
+            )
+        )
+        user_template = result.scalar_one_or_none()
+        if user_template:
+            return user_template.message_template
+
+        # 2. Check for global template
+        result = await session.execute(
+            select(CelebrationTemplate).where(
+                CelebrationTemplate.template_type == template_type,
+                CelebrationTemplate.target_slack_id.is_(None),
+                CelebrationTemplate.is_active == True,
+            )
+        )
+        global_template = result.scalar_one_or_none()
+        if global_template:
+            return global_template.message_template
+
+    return None
+
+
+def _render_template(template: str, name: str, years: int = None) -> str:
+    """Replace {name}, {years}, {date} placeholders in the template."""
+    today = datetime.now(ZoneInfo("Asia/Kolkata")).date()
+    rendered = template.replace("{name}", name)
+    rendered = rendered.replace("{date}", today.strftime("%d %B %Y"))
+    if years is not None:
+        rendered = rendered.replace("{years}", str(years))
+    return rendered
+
 
 async def _generate_ai_greeting(celebration_type: str, full_name: str, years: int = None) -> str:
     """Generate a warm, personalized greeting using AI."""
@@ -46,8 +96,21 @@ async def _generate_ai_greeting(celebration_type: str, full_name: str, years: in
             return f"Congratulations {full_name} on completing {years} years with us! 🎊 Thank you for your incredible work and dedication! 🚀"
 
 
+async def _get_celebration_message(celebration_type: str, slack_id: str, name: str, years: int = None) -> str:
+    """
+    Get the celebration message — uses custom template if set, otherwise AI.
+    """
+    custom_template = await _get_custom_template(celebration_type, slack_id)
+    if custom_template:
+        logger.info(f"Using custom {celebration_type} template for {slack_id}")
+        return _render_template(custom_template, name, years)
+    else:
+        logger.info(f"No custom template found for {celebration_type}, using AI generation")
+        return await _generate_ai_greeting(celebration_type, name, years)
+
+
 # ------------------------------------------------------------------ #
-# Daily celebration check (called by Celery Beat)                     #
+# Daily celebration check (called by scheduler)                       #
 # ------------------------------------------------------------------ #
 
 async def check_and_post_celebrations() -> int:
@@ -77,7 +140,7 @@ async def check_and_post_celebrations() -> int:
         for user in birthday_users:
             try:
                 display_name = user.full_name or user.slack_username
-                ai_message = await _generate_ai_greeting("birthday", display_name)
+                ai_message = await _get_celebration_message("birthday", user.slack_id, display_name)
                 
                 blocks = [
                     {
@@ -116,7 +179,7 @@ async def check_and_post_celebrations() -> int:
                     continue  # Skip if less than 1 year
 
                 display_name = user.full_name or user.slack_username
-                ai_message = await _generate_ai_greeting("anniversary", display_name, years)
+                ai_message = await _get_celebration_message("anniversary", user.slack_id, display_name, years)
 
                 blocks = [
                     {
@@ -146,7 +209,137 @@ async def check_and_post_celebrations() -> int:
 
 
 # ------------------------------------------------------------------ #
-# HR Commands: set birthday / anniversary                             #
+# HR Commands: set / view / edit / reset message templates            #
+# ------------------------------------------------------------------ #
+
+async def set_celebration_message(hr_slack_id: str, template_type: str, message: str, target_slack_id: str = None) -> str:
+    """HR admin sets (or updates) a celebration message template."""
+    if template_type not in ("birthday", "anniversary"):
+        return ":x: Type must be `birthday` or `anniversary`."
+
+    async with AsyncSessionLocal() as session:
+        async with session.begin():
+            # Verify HR admin
+            hr_res = await session.execute(select(User).where(User.slack_id == hr_slack_id))
+            hr_user = hr_res.scalar_one_or_none()
+            if not hr_user or not hr_user.is_hr_admin:
+                return ":no_entry: Only HR admins can set celebration messages."
+
+            # Check if template already exists
+            query = select(CelebrationTemplate).where(
+                CelebrationTemplate.template_type == template_type,
+                CelebrationTemplate.is_active == True,
+            )
+            if target_slack_id:
+                query = query.where(CelebrationTemplate.target_slack_id == target_slack_id)
+            else:
+                query = query.where(CelebrationTemplate.target_slack_id.is_(None))
+
+            result = await session.execute(query)
+            existing = result.scalar_one_or_none()
+
+            if existing:
+                existing.message_template = message
+                existing.created_by_slack_id = hr_slack_id
+                action = "Updated"
+            else:
+                new_template = CelebrationTemplate(
+                    template_type=template_type,
+                    target_slack_id=target_slack_id,
+                    message_template=message,
+                    created_by_slack_id=hr_slack_id,
+                )
+                session.add(new_template)
+                action = "Created"
+
+    scope = f"for <@{target_slack_id}>" if target_slack_id else "(global)"
+    return f":white_check_mark: {action} *{template_type}* message template {scope}.\n\n*Preview:*\n{_render_template(message, 'John Doe', 3)}"
+
+
+async def view_celebration_message(hr_slack_id: str, template_type: str) -> str:
+    """View the current celebration message template."""
+    if template_type not in ("birthday", "anniversary"):
+        return ":x: Type must be `birthday` or `anniversary`."
+
+    async with AsyncSessionLocal() as session:
+        # Verify HR admin
+        hr_res = await session.execute(select(User).where(User.slack_id == hr_slack_id))
+        hr_user = hr_res.scalar_one_or_none()
+        if not hr_user or not hr_user.is_hr_admin:
+            return ":no_entry: Only HR admins can view celebration templates."
+
+        # Get global template
+        result = await session.execute(
+            select(CelebrationTemplate).where(
+                CelebrationTemplate.template_type == template_type,
+                CelebrationTemplate.target_slack_id.is_(None),
+                CelebrationTemplate.is_active == True,
+            )
+        )
+        global_tmpl = result.scalar_one_or_none()
+
+        # Get all per-user templates
+        result = await session.execute(
+            select(CelebrationTemplate).where(
+                CelebrationTemplate.template_type == template_type,
+                CelebrationTemplate.target_slack_id.isnot(None),
+                CelebrationTemplate.is_active == True,
+            )
+        )
+        user_templates = result.scalars().all()
+
+    lines = [f":scroll: *{template_type.capitalize()} Message Templates:*\n"]
+
+    if global_tmpl:
+        preview = _render_template(global_tmpl.message_template, "John Doe", 3)
+        lines.append(f"*Global Template:*\n```{global_tmpl.message_template}```\n*Preview:*\n{preview}\n")
+    else:
+        lines.append("*Global Template:* _Not set (using AI-generated messages)_\n")
+
+    if user_templates:
+        lines.append("*Per-User Templates:*")
+        for tmpl in user_templates:
+            lines.append(f"• <@{tmpl.target_slack_id}>: `{tmpl.message_template[:60]}...`")
+
+    lines.append(f"\n_Available variables:_ `{{name}}`, `{{years}}`, `{{date}}`")
+    return "\n".join(lines)
+
+
+async def reset_celebration_message(hr_slack_id: str, template_type: str, target_slack_id: str = None) -> str:
+    """Delete a celebration message template (reverts to AI generation)."""
+    if template_type not in ("birthday", "anniversary"):
+        return ":x: Type must be `birthday` or `anniversary`."
+
+    async with AsyncSessionLocal() as session:
+        async with session.begin():
+            # Verify HR admin
+            hr_res = await session.execute(select(User).where(User.slack_id == hr_slack_id))
+            hr_user = hr_res.scalar_one_or_none()
+            if not hr_user or not hr_user.is_hr_admin:
+                return ":no_entry: Only HR admins can reset celebration templates."
+
+            query = select(CelebrationTemplate).where(
+                CelebrationTemplate.template_type == template_type,
+                CelebrationTemplate.is_active == True,
+            )
+            if target_slack_id:
+                query = query.where(CelebrationTemplate.target_slack_id == target_slack_id)
+            else:
+                query = query.where(CelebrationTemplate.target_slack_id.is_(None))
+
+            result = await session.execute(query)
+            existing = result.scalar_one_or_none()
+
+            if existing:
+                existing.is_active = False
+                scope = f"for <@{target_slack_id}>" if target_slack_id else "(global)"
+                return f":recycle: *{template_type.capitalize()}* template {scope} has been reset. AI-generated messages will be used."
+            else:
+                return f":information_source: No custom *{template_type}* template found to reset."
+
+
+# ------------------------------------------------------------------ #
+# HR Commands: set birthday / anniversary dates                       #
 # ------------------------------------------------------------------ #
 
 async def set_user_birthday(hr_slack_id: str, target_slack_id: str, birthday_str: str) -> str:
