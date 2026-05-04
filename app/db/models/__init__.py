@@ -6,6 +6,7 @@ from app.db.models.broadcast import BroadcastLog
 from app.db.models.feedback import Feedback
 from app.db.models.reminder import Reminder
 from app.db.models.kudos import Kudos
+from app.db.models.vault import UserVault
 
 __all__ = [
     "Base",
@@ -18,4 +19,5 @@ __all__ = [
     "Feedback",
     "Reminder",
     "Kudos",
-]
+    "UserVault",
+]

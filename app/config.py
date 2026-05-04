@@ -28,7 +28,9 @@ class Settings(BaseSettings):
 
     jwt_secret: str = "dev-jwt-secret"
     jwt_algorithm: str = "HS256"
-    jwt_expire_minutes: int = 480
+    jwt_expire_minutes: int = 1440
+
+    vault_master_key: str = ""
 
     standup_cron_hour: int = 15
     standup_cron_minute: int = 0

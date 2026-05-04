@@ -18,6 +18,7 @@ from app.agents import (
     general_chat_agent,
     kudos_agent,
     broadcast_agent,
+    vault_agent,
 )
 from app.agents.intent_router import Intent
 from app.db.models.user import User
@@ -203,7 +204,7 @@ async def cmd_help(ack, command) -> None:
         },
         {
             "type": "section",
-            "text": {"type": "mrkdwn", "text": "• `/reminder <time> <task>`\n_Set a natural-language reminder for yourself._\n*Example:* `/reminder in 2 hours to review the PR`\n• `/feedback <message>`\n_Send a truly anonymous message to the HR team. Your identity is never revealed._"}
+            "text": {"type": "mrkdwn", "text": "• `/reminder <time> <task>`\n_Set a natural-language reminder for yourself._\n*Example:* `/reminder in 2 hours to review the PR`\n• `/vault <action> <key> <value>`\n_Store and retrieve encrypted secrets (API keys, links)._\n*Example:* `/vault set Figma https://...`\n• `/feedback <message>`\n_Send a truly anonymous message to the HR team. Your identity is never revealed._"}
         },
         {"type": "divider"},
         {
@@ -417,3 +418,42 @@ async def _process_leave_action(body: dict, action: dict, action_id: str) -> Non
         )
     except Exception:
         logger.exception("Action failed")
+
+
+@bolt_app.command("/vault")
+async def cmd_vault(ack, command) -> None:
+    await ack()
+    _spawn_background(_run_vault_command(command["user_id"], command.get("text", "").strip()), "vault_command")
+
+
+async def _run_vault_command(slack_id: str, text: str) -> None:
+    try:
+        if not text or text.lower() == "list":
+            res = await vault_agent.list_vault(slack_id)
+            await slack_service.dm_user(slack_id, res)
+            return
+
+        parts = text.split(maxsplit=2)
+        action = parts[0].lower()
+        
+        if action == "set" and len(parts) == 3:
+            res = await vault_agent.add_to_vault(slack_id, parts[1], parts[2])
+            await slack_service.dm_user(slack_id, res)
+        elif action == "get" and len(parts) >= 2:
+            res = await vault_agent.get_from_vault(slack_id, parts[1])
+            await slack_service.dm_user(slack_id, res)
+        elif action == "delete" and len(parts) >= 2:
+            res = await vault_agent.delete_from_vault(slack_id, parts[1])
+            await slack_service.dm_user(slack_id, res)
+        else:
+            usage = (
+                ":vault: *Vault Usage Guide:*\n"
+                "• `/vault set <key> <secret>` - Store a secret\n"
+                "• `/vault get <key>` - Retrieve a secret (private DM)\n"
+                "• `/vault list` - List all your keys\n"
+                "• `/vault delete <key>` - Remove a key"
+            )
+            await slack_service.dm_user(slack_id, usage)
+    except Exception:
+        logger.exception("Vault command failed")
+        await slack_service.dm_user(slack_id, ":warning: Vault error occurred. Please try again later.")
