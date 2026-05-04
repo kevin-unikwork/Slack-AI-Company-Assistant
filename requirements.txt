@@ -28,3 +28,5 @@ apscheduler>=3.10.0
 tzdata
 langchain-postgres>=0.0.12
 psycopg[binary]>=3.1.18
+chromadb>=0.5.0
+langchain-chroma>=0.1.0
