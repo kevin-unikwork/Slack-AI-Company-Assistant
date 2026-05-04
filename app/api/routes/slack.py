@@ -379,11 +379,29 @@ async def cmd_celebration(ack, command) -> None:
 async def _run_celebration_cmd(slack_id: str, text: str, type: str) -> None:
     try:
         from app.agents.celebration_agent import set_user_birthday, set_user_anniversary
-        match = re.search(r"<@([A-Z0-9]+)(?:\|[^>]+)?>.*?(\d{4}-\d{2}-\d{2})", text)
-        if not match:
+        # Find the date at the end of the text
+        date_match = re.search(r'(\d{4}-\d{2}-\d{2})$', text.strip())
+        if not date_match:
             await slack_service.dm_user(slack_id, f"Usage: `/set{type} @user YYYY-MM-DD`")
             return
-        res = await (set_user_birthday if type == "birthday" else set_user_anniversary)(slack_id, match.group(1), match.group(2))
+            
+        date_str = date_match.group(1)
+        
+        # The user identifier is everything before the date
+        user_str = text[:date_match.start()].strip()
+        
+        # Extract ID from a Slack mention <@U12345|name>, else use raw string
+        mention_match = re.search(r"<@([A-Z0-9]+)(?:\|[^>]+)?>", user_str)
+        if mention_match:
+            target_user = mention_match.group(1)
+        else:
+            target_user = user_str[1:] if user_str.startswith('@') else user_str
+            
+        if not target_user:
+            await slack_service.dm_user(slack_id, f"Usage: `/set{type} @user YYYY-MM-DD`")
+            return
+
+        res = await (set_user_birthday if type == "birthday" else set_user_anniversary)(slack_id, target_user, date_str)
         await slack_service.dm_user(slack_id, res)
     except Exception:
         logger.exception(f"Set {type} failed")
