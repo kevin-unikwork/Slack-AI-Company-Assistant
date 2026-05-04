@@ -205,7 +205,79 @@ async def check_and_post_celebrations() -> int:
     else:
         logger.info(f"Posted {posted} celebration(s) today")
 
+    # Send reminders for tomorrow's celebrations to HR admins
+    await notify_hr_upcoming_celebrations()
+
     return posted
+
+
+async def notify_hr_upcoming_celebrations() -> None:
+    """Finds birthdays and anniversaries for tomorrow and notifies HR admins."""
+    tomorrow = datetime.now(ZoneInfo("Asia/Kolkata")).date() + timedelta(days=1)
+    tomorrow_month = tomorrow.month
+    tomorrow_day = tomorrow.day
+
+    async with AsyncSessionLocal() as session:
+        # Get HR Admins
+        hr_result = await session.execute(select(User).where(User.is_hr_admin == True))
+        hr_admins = hr_result.scalars().all()
+        if not hr_admins:
+            return
+
+        # Upcoming Birthdays
+        birthday_result = await session.execute(
+            select(User).where(
+                User.is_active == True,
+                User.birthday.isnot(None),
+                extract("month", User.birthday) == tomorrow_month,
+                extract("day", User.birthday) == tomorrow_day,
+            )
+        )
+        upcoming_birthdays = birthday_result.scalars().all()
+
+        # Upcoming Anniversaries
+        anniversary_result = await session.execute(
+            select(User).where(
+                User.is_active == True,
+                User.joined_at.isnot(None),
+                extract("month", User.joined_at) == tomorrow_month,
+                extract("day", User.joined_at) == tomorrow_day,
+            )
+        )
+        upcoming_anniversaries = anniversary_result.scalars().all()
+
+        # Filter anniversaries for >= 1 year
+        valid_anniversaries = []
+        for user in upcoming_anniversaries:
+            years = tomorrow.year - user.joined_at.year
+            if years >= 1:
+                valid_anniversaries.append((user, years))
+
+        if not upcoming_birthdays and not valid_anniversaries:
+            return
+
+        # Construct message
+        lines = [":bell: *HR Reminder: Upcoming Celebrations Tomorrow!*"]
+        if upcoming_birthdays:
+            lines.append("\n*🎂 Birthdays:*")
+            for user in upcoming_birthdays:
+                name = user.full_name or user.slack_username
+                lines.append(f"• <@{user.slack_id}> ({name})")
+                
+        if valid_anniversaries:
+            lines.append("\n*🎊 Work Anniversaries:*")
+            for user, years in valid_anniversaries:
+                name = user.full_name or user.slack_username
+                lines.append(f"• <@{user.slack_id}> ({name}) - {years} year(s)")
+
+        message = "\n".join(lines)
+        
+        # Send to all HR admins
+        for hr in hr_admins:
+            try:
+                await slack_service.dm_user(hr.slack_id, message)
+            except Exception as e:
+                logger.error(f"Failed to notify HR {hr.slack_id}: {e}")
 
 
 # ------------------------------------------------------------------ #
