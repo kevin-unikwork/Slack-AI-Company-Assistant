@@ -25,7 +25,6 @@ class Settings(BaseSettings):
             v = v.replace("postgres://", "postgresql+asyncpg://", 1)
         return v
     redis_url: str = "redis://localhost:6379/0"
-    chroma_persist_dir: str = "./chroma_db"
 
     jwt_secret: str = "dev-jwt-secret"
     jwt_algorithm: str = "HS256"

@@ -6,15 +6,11 @@ from pathlib import Path
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
-try:
-    from langchain_chroma import Chroma
-except ImportError:  # Compatibility for environments without langchain-chroma package
-    from langchain_community.vectorstores import Chroma
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.db.chroma import POLICY_COLLECTION_NAME, get_chroma_client, get_embeddings
+from app.db.vectorstore import get_vectorstore, POLICY_COLLECTION_NAME
 from app.db.models.policy import PolicyDocument
 from app.utils.exceptions import DocumentNotFoundError, PolicyAgentError
 from app.utils.logger import get_logger
@@ -27,21 +23,8 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 _splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
 
 
-def _get_vectorstore() -> Chroma:
-    """
-    Return a LangChain Chroma wrapper that uses the singleton PersistentClient.
-    Using the singleton avoids opening two clients on the same SQLite file,
-    which can cause lock errors with ChromaDB 0.5.x.
-    """
-    return Chroma(
-        client=get_chroma_client(),          # ← use singleton, NOT persist_directory
-        collection_name=POLICY_COLLECTION_NAME,
-        embedding_function=get_embeddings(),
-    )
-
-
 class PolicyService:
-    """Handles policy document ingestion and ChromaDB indexing."""
+    """Handles policy document ingestion and pgvector indexing."""
 
     async def ingest_document(
         self,
@@ -53,7 +36,7 @@ class PolicyService:
         description: str | None = None,
     ) -> PolicyDocument:
         """
-        Save file to disk, load, chunk, embed, store in ChromaDB,
+        Save file to disk, load, chunk, embed, store in pgvector,
         then persist metadata in PostgreSQL.
         """
         safe_name = f"{uuid.uuid4().hex}_{original_filename}"
@@ -84,11 +67,11 @@ class PolicyService:
                     }
                 )
 
-            vectorstore = _get_vectorstore()
+            vectorstore = get_vectorstore()
             vectorstore.add_documents(chunks)
 
             logger.info(
-                "Policy document ingested",
+                "Policy document ingested into pgvector",
                 extra={
                     "filename": original_filename,
                     "chunks": len(chunks),
@@ -126,32 +109,30 @@ class PolicyService:
         return list(result.scalars().all())
 
     async def delete_document(self, session: AsyncSession, doc_id: int) -> None:
-        """Soft-delete: mark is_active=False and remove chunks from ChromaDB."""
+        """Soft-delete: mark is_active=False and remove chunks from pgvector."""
         result = await session.execute(select(PolicyDocument).where(PolicyDocument.id == doc_id))
         doc = result.scalar_one_or_none()
         if not doc:
             raise DocumentNotFoundError(f"Policy document {doc_id} not found")
 
         try:
-            vectorstore = _get_vectorstore()
-            # ChromaDB where filter requires operator syntax: {"field": {"$eq": value}}
-            vectorstore._collection.delete(
-                where={"source": {"$eq": doc.original_filename}}
-            )
+            vectorstore = get_vectorstore()
+            # Delete all embeddings that match this source filename
+            vectorstore.delete(filter={"source": doc.original_filename})
             logger.info(
-                "ChromaDB chunks deleted",
+                "pgvector chunks deleted",
                 extra={"doc_id": doc_id, "filename": doc.original_filename},
             )
         except Exception as exc:
-            logger.exception("Failed to remove chunks from ChromaDB", extra={"doc_id": doc_id})
-            raise PolicyAgentError(f"ChromaDB deletion failed: {exc}") from exc
+            logger.exception("Failed to remove chunks from pgvector", extra={"doc_id": doc_id})
+            raise PolicyAgentError(f"pgvector deletion failed: {exc}") from exc
 
         doc.is_active = False
         await session.flush()
 
     def get_retriever(self):
         """Return a LangChain retriever (k=4 cosine nearest neighbours)."""
-        vectorstore = _get_vectorstore()
+        vectorstore = get_vectorstore()
         return vectorstore.as_retriever(search_kwargs={"k": 4})
 
 

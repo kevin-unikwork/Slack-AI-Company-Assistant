@@ -74,7 +74,7 @@ async def upload_policy(
     file: UploadFile = File(...),
     description: str = Form(default=""),
 ) -> PolicyUploadResponse:
-    """Upload a PDF or TXT policy document. Ingests into ChromaDB."""
+    """Upload a PDF or TXT policy document. Ingests into pgvector."""
     filename = file.filename or "upload"
     ext = filename.rsplit(".", 1)[-1].lower()
     if ext not in ("pdf", "txt"):
