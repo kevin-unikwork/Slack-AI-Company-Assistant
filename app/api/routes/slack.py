@@ -379,7 +379,7 @@ async def cmd_celebration(ack, command) -> None:
 async def _run_celebration_cmd(slack_id: str, text: str, type: str) -> None:
     try:
         from app.agents.celebration_agent import set_user_birthday, set_user_anniversary
-        match = re.search(r"<@([A-Z0-9]+)>.*?(\d{4}-\d{2}-\d{2})", text)
+        match = re.search(r"<@([A-Z0-9]+)(?:\|[^>]+)?>.*?(\d{4}-\d{2}-\d{2})", text)
         if not match:
             await slack_service.dm_user(slack_id, f"Usage: `/set{type} @user YYYY-MM-DD`")
             return
