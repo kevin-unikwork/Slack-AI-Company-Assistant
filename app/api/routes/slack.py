@@ -521,3 +521,31 @@ async def _run_setmessage_command(slack_id: str, text: str) -> None:
     except Exception:
         logger.exception("Setmessage command failed")
         await slack_service.dm_user(slack_id, ":warning: An error occurred. Please try again.")
+
+
+@bolt_app.command("/triggercelebration")
+async def cmd_triggercelebration(ack, command) -> None:
+    await ack()
+    _spawn_background(_run_triggercelebration_command(command["user_id"]), "triggercelebration_command")
+
+
+async def _run_triggercelebration_command(slack_id: str) -> None:
+    from app.agents.celebration_agent import check_and_post_celebrations
+    from app.db.session import AsyncSessionLocal
+    from app.db.models.user import User
+    from sqlalchemy import select
+
+    try:
+        async with AsyncSessionLocal() as session:
+            hr_res = await session.execute(select(User).where(User.slack_id == slack_id))
+            hr_user = hr_res.scalar_one_or_none()
+            if not hr_user or not hr_user.is_hr_admin:
+                await slack_service.dm_user(slack_id, ":no_entry: Only HR admins can trigger celebrations.")
+                return
+
+        await slack_service.dm_user(slack_id, ":hourglass_flowing_sand: Triggering celebration check...")
+        count = await check_and_post_celebrations()
+        await slack_service.dm_user(slack_id, f":white_check_mark: Celebration check complete. Posted {count} message(s).")
+    except Exception:
+        logger.exception("Triggercelebration command failed")
+        await slack_service.dm_user(slack_id, ":warning: An error occurred while triggering celebrations.")
